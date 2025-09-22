@@ -7,11 +7,14 @@
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:frontend": "cd apps/web && npm run dev",
     "dev:backend": "cd worker && python server.py",
+    "dev:vercel": "cd apps/web && npm run dev",
     "build": "cd apps/web && npm run build",
     "start": "concurrently \"npm run start:backend\" \"npm run start:frontend\"",
     "start:frontend": "cd apps/web && npm run start",
     "start:backend": "cd worker && python server.py",
+    "start:vercel": "cd apps/web && npm run start",
     "install:all": "npm install && cd apps/web && npm install && cd ../../worker && pip install -r requirements.txt",
+    "install:vercel": "cd apps/web && npm install",
     "clean": "rm -rf node_modules apps/web/node_modules worker/__pycache__ worker/*/__pycache__"
   },
   "devDependencies": {

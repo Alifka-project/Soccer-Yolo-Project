@@ -112,20 +112,20 @@ export function SoccerAnalytics() {
           <div className="grid grid-cols-2 gap-4">
             <div className="text-center p-3 bg-blue-50 rounded-lg">
               <div className="text-2xl font-bold text-blue-600 mb-1">
-                {possession_stats.team_a_percentage.toFixed(1)}%
+                {possession_stats?.team_a_percentage.toFixed(1) || '0.0'}%
               </div>
               <div className="text-xs font-medium text-gray-700">Team A</div>
               <div className="text-xs text-gray-500">
-                {possession_stats.team_a_possession.toFixed(1)}s
+                {possession_stats?.team_a_possession.toFixed(1) || '0.0'}s
               </div>
             </div>
             <div className="text-center p-3 bg-cyan-50 rounded-lg">
               <div className="text-2xl font-bold text-cyan-600 mb-1">
-                {possession_stats.team_b_percentage.toFixed(1)}%
+                {possession_stats?.team_b_percentage.toFixed(1) || '0.0'}%
               </div>
               <div className="text-xs font-medium text-gray-700">Team B</div>
               <div className="text-xs text-gray-500">
-                {possession_stats.team_b_possession.toFixed(1)}s
+                {possession_stats?.team_b_possession.toFixed(1) || '0.0'}s
               </div>
             </div>
           </div>
@@ -133,15 +133,15 @@ export function SoccerAnalytics() {
           <div className="space-y-3">
             <div className="flex justify-between text-sm font-medium">
               <span>Team A</span>
-              <span>{possession_stats.team_a_percentage.toFixed(1)}%</span>
+                    <span>{possession_stats?.team_a_percentage.toFixed(1) || '0.0'}%</span>
             </div>
             <Progress 
-              value={possession_stats.team_a_percentage} 
+              value={possession_stats?.team_a_percentage || 0} 
               className="h-3"
             />
           </div>
 
-          {possession_stats.current_possession && (
+          {possession_stats?.current_possession && (
             <div className="mt-4 p-3 bg-green-50 rounded-lg border border-green-200">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
@@ -149,10 +149,10 @@ export function SoccerAnalytics() {
                   Current Possession
                 </span>
               </div>
-              <div className="text-xs text-green-600 mt-1">
-                Player {possession_stats.current_possession.player_id} 
-                ({possession_stats.current_possession.team})
-              </div>
+                <div className="text-xs text-green-600 mt-1">
+                  Player {possession_stats?.current_possession.player_id}
+                  ({possession_stats?.current_possession.team})
+                </div>
             </div>
           )}
         </CardContent>
@@ -169,20 +169,20 @@ export function SoccerAnalytics() {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-3 gap-3 text-center">
             <div className="p-3 bg-gray-50 rounded-lg">
-              <div className="text-xl font-bold text-gray-800 mb-1">
-                {pass_stats.total_passes}
-              </div>
+                    <div className="text-xl font-bold text-gray-800 mb-1">
+                      {pass_stats?.total_passes || 0}
+                    </div>
               <div className="text-xs text-gray-600 font-medium">Total Passes</div>
             </div>
             <div className="p-3 bg-green-50 rounded-lg">
               <div className="text-xl font-bold text-green-600 mb-1">
-                {pass_stats.successful_passes}
+                {pass_stats?.successful_passes || 0}
               </div>
               <div className="text-xs text-gray-600 font-medium">Successful</div>
             </div>
             <div className="p-3 bg-blue-50 rounded-lg">
               <div className="text-xl font-bold text-blue-600 mb-1">
-                {pass_stats.pass_success_rate.toFixed(1)}%
+                {pass_stats?.pass_success_rate.toFixed(1) || '0.0'}%
               </div>
               <div className="text-xs text-gray-600 font-medium">Success Rate</div>
             </div>
@@ -190,20 +190,20 @@ export function SoccerAnalytics() {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="text-center p-3 bg-blue-50 rounded-lg">
-              <div className="text-lg font-bold text-blue-700 mb-1">
-                {pass_stats.team_a_passes}
-              </div>
+                    <div className="text-lg font-bold text-blue-700 mb-1">
+                      {pass_stats?.team_a_passes || 0}
+                    </div>
               <div className="text-xs text-blue-600 font-medium">Team A Passes</div>
             </div>
             <div className="text-center p-3 bg-cyan-50 rounded-lg">
               <div className="text-lg font-bold text-cyan-700 mb-1">
-                {pass_stats.team_b_passes}
+                {pass_stats?.team_b_passes || 0}
               </div>
               <div className="text-xs text-cyan-600 font-medium">Team B Passes</div>
             </div>
           </div>
 
-          {pass_stats.recent_passes && pass_stats.recent_passes.length > 0 && (
+          {pass_stats?.recent_passes && pass_stats.recent_passes.length > 0 && (
             <div className="mt-4">
               <h4 className="text-sm font-medium text-gray-700 mb-2">Recent Passes</h4>
               <div className="space-y-1 max-h-32 overflow-y-auto">
@@ -235,13 +235,13 @@ export function SoccerAnalytics() {
           <div className="grid grid-cols-2 gap-3 text-center">
             <div className="p-3 bg-gray-50 rounded-lg">
               <div className="text-xl font-bold text-gray-800 mb-1">
-                {tracking_data?.length || tracks.size}
+                {currentAnalytics?.tracking_data?.length || tracks.size}
               </div>
               <div className="text-xs text-gray-600 font-medium">Objects Tracked</div>
             </div>
             <div className="p-3 bg-gray-50 rounded-lg">
               <div className="text-xl font-bold text-gray-800 mb-1">
-                {frame_id || 'N/A'}
+                {currentAnalytics?.frame_id || 'N/A'}
               </div>
               <div className="text-xs text-gray-600 font-medium">Current Frame</div>
             </div>

@@ -83,7 +83,7 @@ export function PlayerMetrics() {
         currentAnalytics.tracking_data.forEach((obj: any) => {
           const existingStats = stats.get(obj.track_id.toString()) || {
             id: obj.track_id.toString(),
-            positions: [],
+            positions: [] as any[],
             team: 'unknown'
           }
           

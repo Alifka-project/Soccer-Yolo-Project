@@ -58,8 +58,10 @@ interface SessionState {
   setCurrentFrame: (frame: number) => void
 }
 
-const WORKER_HTTP = process.env.NEXT_PUBLIC_WORKER_HTTP_BASE || 'http://localhost:8001'
-const WORKER_WS = process.env.NEXT_PUBLIC_WORKER_WS_BASE || 'ws://localhost:8001'
+// Use Next.js API routes for Vercel deployment
+const API_BASE = process.env.NODE_ENV === 'production' 
+  ? '' // Use relative URLs in production
+  : 'http://localhost:3000' // Use localhost in development
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessionId: null,
@@ -83,7 +85,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   createSession: async () => {
     try {
       console.log('Creating session...')
-      const res = await fetch(`${WORKER_HTTP}/sessions`, {
+      const res = await fetch(`${API_BASE}/api/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -124,7 +126,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const formData = new FormData()
       formData.append('file', file)
 
-      const res = await fetch(`${WORKER_HTTP}/sessions/${sessionId}/upload`, {
+      const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/upload`, {
         method: 'POST',
         body: formData
       })
@@ -138,7 +140,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.log('Upload response:', data)
       
       // Set video data and create video URL
-      const videoUrl = `${WORKER_HTTP}/sessions/${sessionId}/video`
+      const videoUrl = `${API_BASE}/api/sessions/${sessionId}/video`
       console.log('Video uploaded successfully, URL:', videoUrl)
       
       set({ 
@@ -163,7 +165,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       set({ processingStatus: 'processing', progress: 0, error: null })
       
-      const res = await fetch(`${WORKER_HTTP}/sessions/${sessionId}/jobs`, {
+      const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/jobs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode, tracker: 'bytetrack' })
@@ -191,23 +193,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const { sessionId, jobId } = get()
     if (!sessionId || !jobId) return
 
-    // Close existing connection if any
-    const { wsConnection } = get()
-    if (wsConnection) {
-      wsConnection.close()
-    }
-
-    const ws = new WebSocket(`${WORKER_WS}/sessions/${sessionId}/stream?jobId=${jobId}`)
+    // Use Server-Sent Events for Vercel compatibility
+    const eventSource = new EventSource(`${API_BASE}/api/sessions/${sessionId}/stream?jobId=${jobId}`)
     
-    ws.onopen = () => {
-      console.log('WebSocket connected')
-      set({ wsConnection: ws })
+    eventSource.onopen = () => {
+      console.log('EventSource connected')
+      set({ wsConnection: eventSource as any })
     }
     
-    ws.onmessage = (event) => {
+    eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
-        console.log('WS message:', data)
+        console.log('SSE message:', data)
         
         switch (data.type) {
           case 'PROGRESS':
@@ -220,39 +217,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               tracks: new Map(Object.entries(data.summary.tracks || {})),
               totalFrames: data.summary.total_frames || 0
             })
+            eventSource.close()
             break
           case 'ERROR':
             set({ 
               processingStatus: 'error', 
               error: data.message || 'Processing error occurred' 
             })
+            eventSource.close()
             break
         }
       } catch (error) {
-        console.error('Error parsing WebSocket message:', error)
+        console.error('Error parsing SSE message:', error)
       }
     }
     
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error)
+    eventSource.onerror = (error) => {
+      console.error('EventSource error:', error)
       set({ 
         processingStatus: 'error', 
-        error: 'WebSocket connection error' 
+        error: 'Connection error occurred' 
       })
-    }
-    
-    ws.onclose = (event) => {
-      console.log('WebSocket closed:', event.code, event.reason)
-      set({ wsConnection: null })
-      
-      // If processing was in progress and connection closed unexpectedly
-      const { processingStatus } = get()
-      if (processingStatus === 'processing') {
-        set({ 
-          processingStatus: 'error', 
-          error: 'Connection lost during processing' 
-        })
-      }
+      eventSource.close()
     }
   },
 
@@ -315,92 +301,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       realtimeConnection.close()
     }
 
-    const ws = new WebSocket(`${WORKER_WS}/sessions/${sessionId}/realtime`)
-    let reconnectAttempts = 0
-    const maxReconnectAttempts = 3
-    
-    const attemptReconnect = () => {
-      if (reconnectAttempts < maxReconnectAttempts) {
-        reconnectAttempts++
-        console.log(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})...`)
-        setTimeout(() => {
-          get().connectRealtimeWebSocket()
-        }, 2000)
-      } else {
-        set({ 
-          processingStatus: 'error', 
-          error: 'Real-time connection lost - max reconnection attempts reached' 
-        })
-      }
-    }
-    
-    ws.onopen = () => {
-      console.log('Real-time WebSocket connected')
-      reconnectAttempts = 0
-      set({ realtimeConnection: ws, error: null })
-    }
-    
-    ws.onmessage = (event) => {
-      try {
-        // Handle binary frame data
-        if (event.data instanceof Blob) {
-          // Create image URL directly from blob for better performance
-          const imageUrl = URL.createObjectURL(event.data)
-          
-          // Clean up previous frame URL to prevent memory leaks
-          const { realtimeFrameUrl } = get()
-          if (realtimeFrameUrl) {
-            URL.revokeObjectURL(realtimeFrameUrl)
-          }
-          
-          // Store the latest frame for display
-          set({ 
-            currentFrame: get().currentFrame + 1,
-            realtimeFrameUrl: imageUrl
-          })
-          
-          // Emit frame update event
-          window.dispatchEvent(new CustomEvent('realtimeFrame', { detail: imageUrl }))
-        } else {
-          // Handle JSON messages (analytics data, errors, etc.)
-          const data = JSON.parse(event.data)
-          console.log('Real-time WS message:', data)
-          
-          if (data.type === 'ERROR') {
-            set({ 
-              processingStatus: 'error', 
-              error: data.message || 'Real-time processing error occurred' 
-            })
-          } else if (data.type === 'analytics') {
-            // Update analytics data
-            console.log('📊 Received analytics data:', data)
-            set({ analyticsData: data })
-            
-            // Emit analytics update event
-            window.dispatchEvent(new CustomEvent('analyticsUpdate', { detail: data }))
-          }
-        }
-      } catch (error) {
-        console.error('Error handling real-time WebSocket message:', error)
-      }
-    }
-    
-    ws.onerror = (error) => {
-      console.error('Real-time WebSocket error:', error)
-      // Don't immediately set error status, let onclose handle reconnection
-    }
-    
-    ws.onclose = (event) => {
-      console.log('Real-time WebSocket closed:', event.code, event.reason)
-      set({ realtimeConnection: null })
-      
-      // If real-time was active and connection closed unexpectedly
-      const { processingStatus } = get()
-      if (processingStatus === 'realtime') {
-        // Attempt to reconnect
-        attemptReconnect()
-      }
-    }
+    // Note: Real-time WebSocket not supported in Vercel serverless mode
+    // This would need to be replaced with Server-Sent Events or external WebSocket service
+    console.log('Real-time WebSocket not available in serverless mode')
+    set({ 
+      processingStatus: 'error', 
+      error: 'Real-time mode not supported in Vercel deployment. Use file upload mode instead.' 
+    })
   },
 
   setCurrentFrame: (frame: number) => {
@@ -433,3 +340,4 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     })
   }
 }))
+

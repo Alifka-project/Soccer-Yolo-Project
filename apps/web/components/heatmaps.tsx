@@ -58,7 +58,7 @@ export function Heatmaps() {
       if (tracks.size > 0) {
         tracks.forEach((track, id) => {
           const positions = track.positions || []
-          const heatmapPositions: HeatmapData[] = positions.map(pos => ({
+          const heatmapPositions: HeatmapData[] = positions.map((pos: any) => ({
             x: pos.x + pos.w / 2,
             y: pos.y + pos.h / 2,
             intensity: pos.score || 1
@@ -96,7 +96,7 @@ export function Heatmaps() {
           // Update player heatmap
           const existing = playerMaps.get(playerId) || {
             playerId,
-            positions: [],
+            positions: [] as HeatmapData[],
             totalTime: 0,
             avgIntensity: 0
           }
