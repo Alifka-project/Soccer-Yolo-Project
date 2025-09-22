@@ -71,3 +71,4 @@ AGPL-3.0 (due to YOLO11 usage)
 ## Compliance
 
 When running as a public service, enable "Open-Source mode" to provide source access as required by AGPL.
+# Vercel Auto-Deploy Trigger
