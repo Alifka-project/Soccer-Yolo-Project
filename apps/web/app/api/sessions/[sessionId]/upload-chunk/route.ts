@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-// In-memory storage (use cloud storage in production)
+// In-memory storage for demo (use cloud storage in production)
 const sessions: Map<string, any> = new Map()
 
 export async function POST(
@@ -27,34 +27,21 @@ export async function POST(
       )
     }
     
-    // Check file size (limit to 40MB to be safe under Vercel's 50MB limit)
-    const maxSize = 40 * 1024 * 1024 // 40MB
-    if (file.size > maxSize) {
-      return NextResponse.json(
-        { 
-          error: `File too large. Maximum size is 40MB. Your file is ${(file.size / 1024 / 1024).toFixed(1)}MB`,
-          maxSize: '40MB',
-          fileSize: `${(file.size / 1024 / 1024).toFixed(1)}MB`
-        },
-        { status: 413 }
-      )
-    }
-    
-    // For demo purposes, we'll simulate video processing without storing the actual file
-    // In production, you'd upload to cloud storage (S3, Vercel Blob, etc.)
+    // For demo purposes, accept larger files and simulate upload
     const session = sessions.get(sessionId)
     
-    // Simulate video metadata instead of storing the actual file
+    // Simulate video metadata
     session.video_metadata = {
       name: file.name,
       size: file.size,
       type: file.type,
-      uploaded_at: new Date().toISOString()
+      uploaded_at: new Date().toISOString(),
+      chunked: true
     }
     
-    // Basic video info (in production, use ffprobe or similar)
-    session.fps = 30 // Default
-    session.resolution = [1920, 1080] // Default
+    // Basic video info
+    session.fps = 30
+    session.resolution = [1920, 1080]
     session.video_size = file.size
     
     sessions.set(sessionId, session)
@@ -62,15 +49,16 @@ export async function POST(
     return NextResponse.json({
       receivedBytes: file.size,
       done: true,
-      message: 'Video uploaded successfully (demo mode)',
+      message: 'Video uploaded successfully (chunked demo mode)',
       metadata: {
         name: file.name,
         size: file.size,
-        type: file.type
+        type: file.type,
+        chunked: true
       }
     })
   } catch (error) {
-    console.error('Upload error:', error)
+    console.error('Chunked upload error:', error)
     return NextResponse.json(
       { error: 'Upload failed' },
       { status: 500 }
