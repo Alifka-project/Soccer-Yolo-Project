@@ -14,10 +14,11 @@ export function VideoUpload() {
     }
   }, [uploadVideo])
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+  const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({
     onDrop,
     accept: { 'video/*': ['.mp4', '.avi', '.mov'] },
-    maxFiles: 1
+    maxFiles: 1,
+    maxSize: 45 * 1024 * 1024 // 45MB limit for Vercel
   })
 
   return (
@@ -50,8 +51,13 @@ export function VideoUpload() {
               {isDragActive ? 'Drop video here' : 'Drag & drop video or click to browse'}
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              MP4, AVI, MOV • Max 15 min • 1080p
+              MP4, AVI, MOV • Max 45MB • 1080p
             </p>
+            {fileRejections.length > 0 && (
+              <p className="text-xs text-red-500 mt-1">
+                File too large. Maximum size is 45MB.
+              </p>
+            )}
           </>
         )}
       </div>
