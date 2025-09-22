@@ -1,0 +1,31 @@
+{
+  "name": "soccer-tracking-dashboard",
+  "version": "1.0.0",
+  "description": "Soccer tracking dashboard with real-time video analysis",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:frontend": "cd apps/web && npm run dev",
+    "dev:backend": "cd worker && python server.py",
+    "build": "cd apps/web && npm run build",
+    "start": "concurrently \"npm run start:backend\" \"npm run start:frontend\"",
+    "start:frontend": "cd apps/web && npm run start",
+    "start:backend": "cd worker && python server.py",
+    "install:all": "npm install && cd apps/web && npm install && cd ../../worker && pip install -r requirements.txt",
+    "clean": "rm -rf node_modules apps/web/node_modules worker/__pycache__ worker/*/__pycache__"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "keywords": [
+    "soccer",
+    "tracking",
+    "computer-vision",
+    "yolo",
+    "fastapi",
+    "nextjs",
+    "dashboard"
+  ],
+  "author": "",
+  "license": "MIT"
+}
