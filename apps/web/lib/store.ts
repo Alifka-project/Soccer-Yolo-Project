@@ -139,13 +139,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const data = await res.json()
       console.log('Upload response:', data)
       
-      // Set video data and create video URL
-      const videoUrl = `${API_BASE}/api/sessions/${sessionId}/video`
-      console.log('Video uploaded successfully, URL:', videoUrl)
+      // Set video data (demo mode - no actual video URL needed)
+      console.log('Video uploaded successfully')
       
       set({ 
-        videoData: { size: data.receivedBytes },
-        videoUrl: videoUrl,
+        videoData: { 
+          size: data.receivedBytes,
+          name: data.metadata?.name || file.name,
+          type: data.metadata?.type || file.type
+        },
+        videoUrl: null, // Demo mode - no actual video streaming
         processingStatus: 'idle',
         error: null
       })
