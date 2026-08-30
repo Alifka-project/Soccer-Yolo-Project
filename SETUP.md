@@ -65,7 +65,7 @@ Make sure you have:
 ### Backend Issues
 - Ensure the Python virtual environment is activated
 - Check that all requirements are installed: `pip install -r requirements.txt`
-- Verify YOLO models are downloaded (yolo11s.pt should be in worker/ directory)
+- Verify YOLO models are downloaded (yolo26s.pt is fetched automatically on first worker start)
 
 ### Frontend Issues  
 - Clear Next.js cache: `rm -rf apps/web/.next`

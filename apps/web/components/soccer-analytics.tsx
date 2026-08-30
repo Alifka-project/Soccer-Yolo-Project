@@ -7,13 +7,15 @@ import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 
 export function SoccerAnalytics() {
-  const { analyticsData, isRealtimeMode } = useSessionStore()
+  const { analyticsData, isRealtimeMode, processingStatus, tracks } = useSessionStore()
   const [localAnalytics, setLocalAnalytics] = useState(analyticsData)
 
   useEffect(() => {
-    // Listen for analytics updates
+    setLocalAnalytics(analyticsData)
+  }, [analyticsData])
+
+  useEffect(() => {
     const handleAnalyticsUpdate = (event: CustomEvent) => {
-      console.log('📊 Analytics component received update:', event.detail)
       setLocalAnalytics(event.detail)
     }
 
@@ -26,7 +28,6 @@ export function SoccerAnalytics() {
 
   // Use local analytics if available, otherwise use store data
   const currentAnalytics = localAnalytics || analyticsData
-  const { processingStatus, tracks } = useSessionStore()
 
   // Show analytics if we have real-time data OR completed tracking data
   const hasAnalyticsData = currentAnalytics && (isRealtimeMode || processingStatus === 'completed')

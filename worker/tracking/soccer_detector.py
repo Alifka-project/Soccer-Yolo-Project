@@ -1,20 +1,30 @@
 from ultralytics import YOLO
 import numpy as np
 import cv2
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import time
+from tracking.model_config import (
+    BALL_CLASS_ID,
+    PERSON_CLASS_ID,
+    get_device,
+    get_model_name,
+    use_half_precision,
+    weights_path,
+)
 
 class SoccerBallDetector:
     """Specialized soccer ball detector with enhanced accuracy"""
     
-    def __init__(self, model_name: str = "yolo11s", conf_thresh: float = 0.4):
+    def __init__(self, model_name: str = None, conf_thresh: float = 0.4, model: Optional[YOLO] = None):
         """Initialize soccer ball detector"""
-        self.model_name = model_name
+        self.model_name = model_name or get_model_name("preview")
         self.conf_thresh = conf_thresh
-        self.model = YOLO(f"{model_name}.pt")
+        self.device = get_device()
+        self.half = use_half_precision(self.device)
+        self.model = model or YOLO(weights_path(self.model_name))
         
         # Ball-specific parameters
-        self.ball_class_id = 32  # Sports ball class in COCO
+        self.ball_class_id = BALL_CLASS_ID  # Sports ball class in COCO
         self.min_ball_size = 5   # Minimum ball size in pixels
         self.max_ball_size = 100 # Maximum ball size in pixels
         
@@ -41,7 +51,9 @@ class SoccerBallDetector:
                 conf=self.conf_thresh,
                 verbose=False,
                 imgsz=640,
-                half=False  # Disable half precision to avoid CPU errors
+                half=self.half,
+                device=self.device,
+                classes=[self.ball_class_id],
             )
             
             # Process results for ball detection
@@ -198,19 +210,21 @@ class SoccerBallDetector:
 class EnhancedSoccerDetector:
     """Enhanced soccer detector combining player and ball detection"""
     
-    def __init__(self, model_name: str = "yolo11s", conf_thresh: float = 0.3):
-        """Initialize enhanced soccer detector"""
-        self.model_name = model_name
+    def __init__(self, model_name: str = None, conf_thresh: float = 0.3):
+        """Initialize enhanced soccer detector with YOLO26."""
+        self.model_name = model_name or get_model_name("preview")
         self.conf_thresh = conf_thresh
-        self.model = YOLO(f"{model_name}.pt")
+        self.device = get_device()
+        self.half = use_half_precision(self.device)
+        self.model = YOLO(weights_path(self.model_name))
         
-        # Specialized detectors
-        self.ball_detector = SoccerBallDetector(model_name, conf_thresh + 0.1)
+        # Specialized detectors share the same weights to avoid loading YOLO twice
+        self.ball_detector = SoccerBallDetector(self.model_name, conf_thresh + 0.1, model=self.model)
         
         # Class-specific parameters
         self.class_thresholds = {
-            0: 0.25,   # person - lower threshold for better recall
-            32: 0.4    # ball - higher threshold for precision
+            PERSON_CLASS_ID: 0.25,   # person - lower threshold for better recall
+            BALL_CLASS_ID: 0.4    # ball - higher threshold for precision
         }
         
         # Performance tracking
@@ -266,7 +280,9 @@ class EnhancedSoccerDetector:
                 conf=self.conf_thresh,
                 verbose=False,
                 imgsz=target_size,
-                half=False  # Disable half precision to avoid CPU errors
+                half=self.half,
+                device=self.device,
+                classes=[PERSON_CLASS_ID],
             )
             
             # Process results for players only
@@ -280,9 +296,9 @@ class EnhancedSoccerDetector:
                         cls = int(box.cls[0].cpu().numpy())
                         
                         # Only process person detections
-                        if cls == 0:  # person class
+                        if cls == PERSON_CLASS_ID:
                             # Apply class-specific threshold
-                            if conf < self.class_thresholds[0]:
+                            if conf < self.class_thresholds[PERSON_CLASS_ID]:
                                 continue
                             
                             # Scale back to original frame size

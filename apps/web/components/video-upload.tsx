@@ -18,7 +18,7 @@ export function VideoUpload() {
     onDrop,
     accept: { 'video/*': ['.mp4', '.avi', '.mov'] },
     maxFiles: 1,
-    maxSize: 40 * 1024 * 1024 // 40MB limit for Vercel
+    maxSize: 500 * 1024 * 1024,
   })
 
   return (
@@ -39,9 +39,10 @@ export function VideoUpload() {
         {videoData ? (
           <>
             <Film className="mx-auto h-8 w-8 text-green-600 mb-2" />
-            <p className="text-sm text-green-600">Video uploaded successfully</p>
+            <p className="text-sm text-green-600">Video ready</p>
             <p className="text-xs text-muted-foreground mt-1">
-              Size: {(videoData.size / 1024 / 1024).toFixed(2)} MB
+              {videoData.name ? `${videoData.name} · ` : ''}
+              {(videoData.size / 1024 / 1024).toFixed(2)} MB
             </p>
           </>
         ) : (
@@ -51,11 +52,11 @@ export function VideoUpload() {
               {isDragActive ? 'Drop video here' : 'Drag & drop video or click to browse'}
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              MP4, AVI, MOV • Max 40MB • 1080p
+              MP4, AVI, MOV • Max 500MB
             </p>
             {fileRejections.length > 0 && (
               <p className="text-xs text-red-500 mt-1">
-                File too large. Maximum size is 40MB.
+                File too large. Maximum size is 500MB.
               </p>
             )}
           </>

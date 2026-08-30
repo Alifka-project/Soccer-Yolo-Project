@@ -1,37 +1,21 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
+import { generateDemoAnalytics, generateDemoTracks } from '@/lib/demo-engine'
 
-// In-memory storage
-const sessions: Map<string, any> = new Map()
-const jobs: Map<string, any> = new Map()
+export const dynamic = 'force-dynamic'
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: { sessionId: string; jobId: string } }
-) {
-  try {
-    const { sessionId, jobId } = params
-    
-    if (!jobs.has(jobId)) {
-      return NextResponse.json(
-        { error: 'Job not found' },
-        { status: 404 }
-      )
-    }
-    
-    const job = jobs.get(jobId)
-    const session = sessions.get(sessionId)
-    
-    return NextResponse.json({
-      status: job.status,
-      fps: session?.fps || 30,
-      progressPct: job.progress,
-      summary: job.summary
-    })
-  } catch (error) {
-    console.error('Job status error:', error)
-    return NextResponse.json(
-      { error: 'Failed to get job status' },
-      { status: 500 }
-    )
-  }
+export async function GET() {
+  const tracks = generateDemoTracks()
+  const analytics = generateDemoAnalytics(tracks)
+  return NextResponse.json({
+    status: 'done',
+    fps: 30,
+    progressPct: 100,
+    summary: {
+      total_tracks: Object.keys(tracks).length,
+      total_frames: 240,
+      tracks,
+      possession_stats: analytics.possession_stats,
+      pass_stats: analytics.pass_stats,
+    },
+  })
 }

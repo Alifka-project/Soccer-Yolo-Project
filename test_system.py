@@ -14,7 +14,7 @@ def test_backend_connection():
     """Test if backend server is running and responsive"""
     print("🔍 Testing backend connection...")
     try:
-        response = requests.get("http://localhost:8000/docs", timeout=5)
+        response = requests.get("http://localhost:8000/health", timeout=5)
         if response.status_code == 200:
             print("✅ Backend server is running on port 8000")
             return True
@@ -90,7 +90,7 @@ def test_component_initialization():
         print("✅ BallPossessionAnalyzer initialized")
         
         # Test soccer detector
-        detector = EnhancedSoccerDetector(model_name="yolo11s", conf_thresh=0.3)
+        detector = EnhancedSoccerDetector(model_name="yolo26s", conf_thresh=0.3)
         print("✅ EnhancedSoccerDetector initialized")
         
         # Test overlay renderer

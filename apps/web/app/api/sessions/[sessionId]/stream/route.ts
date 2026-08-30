@@ -1,73 +1,48 @@
-import { NextRequest } from 'next/server'
+import { generateDemoAnalytics, generateDemoTracks } from '@/lib/demo-engine'
 
-// In-memory storage
-const sessions: Map<string, any> = new Map()
-const jobs: Map<string, any> = new Map()
+export const dynamic = 'force-dynamic'
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: { sessionId: string } }
-) {
-  const { searchParams } = new URL(request.url)
-  const jobId = searchParams.get('jobId')
-  
-  if (!jobId || !jobs.has(jobId)) {
-    return new Response('Job not found', { status: 404 })
-  }
-  
-  const job = jobs.get(jobId)
-  
-  // Create Server-Sent Events stream
+export async function GET() {
   const encoder = new TextEncoder()
-  
+  const tracks = generateDemoTracks()
+  const analytics = generateDemoAnalytics(tracks)
+
   const stream = new ReadableStream({
     start(controller) {
-      // Send initial progress
-      const sendEvent = (type: string, data: any) => {
-        const eventData = `data: ${JSON.stringify({ type, ...data })}\n\n`
-        controller.enqueue(encoder.encode(eventData))
+      const send = (payload: unknown) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`))
       }
-      
-      // Simulate progress updates
+
       let progress = 0
       const interval = setInterval(() => {
-        progress += Math.random() * 10
-        
+        progress += 12
         if (progress >= 100) {
-          progress = 100
-          sendEvent('PROGRESS', { pct: progress })
-          
-          // Send completion
-          setTimeout(() => {
-            const session = sessions.get(params.sessionId)
-            sendEvent('DONE', {
-              summary: {
-                total_frames: 1000,
-                total_tracks: Object.keys(session?.tracks || {}).length,
-                processing_time: 30.0,
-                tracks: session?.tracks || {}
-              }
-            })
-            clearInterval(interval)
-            controller.close()
-          }, 1000)
-        } else {
-          sendEvent('PROGRESS', { pct: Math.min(progress, 99) })
+          send({ type: 'PROGRESS', pct: 100 })
+          send({
+            type: 'DONE',
+            summary: {
+              total_frames: 240,
+              total_tracks: Object.keys(tracks).length,
+              processing_time: 8,
+              tracks,
+              possession_stats: analytics.possession_stats,
+              pass_stats: analytics.pass_stats,
+            },
+          })
+          clearInterval(interval)
+          controller.close()
+          return
         }
-      }, 200)
-      
-      // Cleanup on close
-      return () => {
-        clearInterval(interval)
-      }
-    }
+        send({ type: 'PROGRESS', pct: progress })
+      }, 180)
+    },
   })
-  
+
   return new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
+      Connection: 'keep-alive',
     },
   })
 }

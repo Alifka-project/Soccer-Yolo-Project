@@ -18,6 +18,8 @@ from tracking.soccer_detector import EnhancedSoccerDetector
 from analytics.possession_analyzer import BallPossessionAnalyzer
 from visualization.soccer_overlay import SoccerOverlayRenderer
 from metrics.analyzer import MetricsAnalyzer
+from tracking.model_config import MODEL_FAMILY, get_device, get_model_name
+from serialization import jsonable
 import io
 import tempfile
 import os
@@ -28,7 +30,7 @@ app = FastAPI(title="Soccer Tracking Worker")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -39,6 +41,7 @@ jobs: Dict[str, dict] = {}
 
 # TTL cleanup
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "1800"))
+WORKER_PORT = int(os.getenv("PORT", "8000"))
 
 class CreateSessionRequest(BaseModel):
     pass
@@ -57,6 +60,17 @@ class IdentityEditRequest(BaseModel):
 
 class ExportRequest(BaseModel):
     kind: str  # csv, mp4, report
+
+@app.get("/health")
+async def health():
+    return {
+        "ok": True,
+        "service": "soccer-tracking-worker",
+        "model_family": MODEL_FAMILY,
+        "model_preview": get_model_name("preview"),
+        "model_publish": get_model_name("publish"),
+        "device": get_device(),
+    }
 
 @app.post("/sessions")
 async def create_session():
@@ -85,10 +99,13 @@ async def upload_video(session_id: str, file: UploadFile):
     
     # Store video in memory/temp
     video_data = await file.read()
+    filename = file.filename or "upload.mp4"
+    suffix = os.path.splitext(filename)[1] or ".mp4"
     sessions[session_id]["video_data"] = video_data
+    sessions[session_id]["filename"] = filename
     
     # Probe video info
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(video_data)
         tmp_path = tmp.name
     
@@ -243,14 +260,25 @@ async def get_frame_with_overlay(session_id: str, frame_id: int):
         raise HTTPException(status_code=404, detail="Session not found")
     
     session = sessions[session_id]
-    processed_frames = session.get("processed_frames", [])
-    
-    if frame_id >= len(processed_frames):
+    video_data = session.get("video_data")
+    if not video_data:
+        raise HTTPException(status_code=404, detail="No video found for session")
+
+    tracks = (session.get("tracks_by_frame") or {}).get(str(frame_id), [])
+    suffix = session.get("video_suffix") or os.path.splitext(session.get("filename", "upload.mp4"))[1] or ".mp4"
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(video_data)
+        tmp_path = tmp.name
+
+    cap = cv2.VideoCapture(tmp_path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+    ret, frame = cap.read()
+    cap.release()
+    os.unlink(tmp_path)
+
+    if not ret or frame is None:
         raise HTTPException(status_code=404, detail="Frame not found")
-    
-    frame_data = processed_frames[frame_id]
-    frame = frame_data["frame_data"]
-    tracks = frame_data["tracks"]
     
     # Draw tracking overlays
     overlay_frame = frame.copy()
@@ -414,7 +442,8 @@ async def websocket_realtime_stream(websocket: WebSocket, session_id: str):
             
         # Create temporary video file first to get FPS
         video_data = session["video_data"]
-        with tempfile.NamedTemporaryFile(suffix=".mov", delete=False) as tmp:
+        suffix = os.path.splitext(session.get("filename", "upload.mp4"))[1] or ".mp4"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(video_data)
             tmp_path = tmp.name
         
@@ -424,7 +453,7 @@ async def websocket_realtime_stream(websocket: WebSocket, session_id: str):
         target_fps = 30.0
         
         # Initialize enhanced soccer tracking components
-        detector = EnhancedSoccerDetector(model_name="yolo11s", conf_thresh=0.3)
+        detector = EnhancedSoccerDetector(model_name=get_model_name("preview"), conf_thresh=0.3)
         tracker = AdvancedMultiObjectTracker(
             track_thresh=0.3,
             match_thresh=0.7,
@@ -600,16 +629,20 @@ async def process_video(job_id: str, session_id: str):
             return
         
         # Get video data and create temporary file
-        video_data = sessions[session_id]["video_data"]
-        fps = sessions[session_id].get("fps", 30)
+        session = sessions[session_id]
+        video_data = session["video_data"]
+        fps = session.get("fps", 30) or 30
+        job_mode = jobs[job_id].get("mode", "preview")
+        model_name = get_model_name(job_mode)
+        suffix = os.path.splitext(session.get("filename", "upload.mp4"))[1] or ".mp4"
         
-        with tempfile.NamedTemporaryFile(suffix=".mov", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(video_data)
             tmp_path = tmp.name
         
         # Initialize enhanced tracking components
-        print("Initializing Enhanced Soccer Detector...")
-        detector = EnhancedSoccerDetector(model_name="yolo11s", conf_thresh=0.3)
+        print(f"Initializing Enhanced Soccer Detector with {MODEL_FAMILY} ({model_name})...")
+        detector = EnhancedSoccerDetector(model_name=model_name, conf_thresh=0.3)
         print("Initializing Advanced Multi-Object Tracker...")
         tracker = AdvancedMultiObjectTracker(
             track_thresh=0.3,
@@ -631,7 +664,7 @@ async def process_video(job_id: str, session_id: str):
         # Process frames
         frame_count = 0
         all_tracks = {}
-        processed_frames = []
+        tracks_by_frame = {}
         
         while True:
             ret, frame = cap.read()
@@ -657,40 +690,38 @@ async def process_video(job_id: str, session_id: str):
                 bbox = obj['bbox']
                 
                 # Store track data
+                class_name = obj.get("class", "person")
                 if track_id not in all_tracks:
                     all_tracks[track_id] = {
-                        "id": track_id,
+                        "id": int(track_id),
                         "positions": [],
                         "team": "unknown",
-                        "jersey": None
+                        "jersey": None,
+                        "class": class_name,
                     }
                 
                 all_tracks[track_id]["positions"].append({
-                    "frame": frame_count,
-                    "x": bbox[0],
-                    "y": bbox[1],
-                    "w": bbox[2],
-                    "h": bbox[3],
-                    "score": obj['score']
+                    "frame": int(frame_count),
+                    "x": float(bbox[0]),
+                    "y": float(bbox[1]),
+                    "w": float(bbox[2]),
+                    "h": float(bbox[3]),
+                    "score": float(obj['score']),
                 })
                 
                 frame_tracks.append({
-                    "id": track_id,
-                    "bbox": bbox,
-                    "score": obj['score']
+                    "id": int(track_id),
+                    "bbox": [float(x) for x in bbox],
+                    "score": float(obj['score']),
+                    "class": class_name,
                 })
             
-            # Store frame data for overlay generation
-            processed_frames.append({
-                "frame_id": frame_count,
-                "tracks": frame_tracks,
-                "frame_data": frame
-            })
+            tracks_by_frame[str(frame_count)] = frame_tracks
             
             frame_count += 1
             
             # Update progress
-            progress = int((frame_count / total_frames) * 100)
+            progress = int((frame_count / max(total_frames, 1)) * 100)
             jobs[job_id]["progress"] = progress
             
             # Check if job was cancelled
@@ -707,9 +738,10 @@ async def process_video(job_id: str, session_id: str):
         cap.release()
         os.unlink(tmp_path)
         
-        # Store processed data in session
-        sessions[session_id]["processed_frames"] = processed_frames
+        # Store processed data in session without keeping raw frames
+        sessions[session_id]["tracks_by_frame"] = tracks_by_frame
         sessions[session_id]["tracks"] = all_tracks
+        sessions[session_id]["video_suffix"] = suffix
         
         # Get final analytics
         possession_stats = possession_analyzer.get_possession_stats()
@@ -717,14 +749,16 @@ async def process_video(job_id: str, session_id: str):
         
         # Processing completed successfully
         jobs[job_id]["status"] = "done"
-        jobs[job_id]["summary"] = {
+        jobs[job_id]["summary"] = jsonable({
             "total_tracks": len(all_tracks),
             "total_frames": frame_count,
-            "processing_time": float(frame_count / fps),  # Convert to float for JSON serialization
-            "tracks": {str(k): v for k, v in all_tracks.items()},  # Convert keys to strings
+            "processing_time": float(frame_count / max(fps, 1)),
+            "tracks": {str(k): v for k, v in all_tracks.items()},
             "possession_stats": possession_stats,
-            "pass_stats": pass_stats
-        }
+            "pass_stats": pass_stats,
+            "model": model_name,
+            "model_family": MODEL_FAMILY,
+        })
         
         print(f"Video processing completed for job {job_id}: {len(all_tracks)} tracks found")
         
@@ -754,4 +788,4 @@ def generate_report(session):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=WORKER_PORT)

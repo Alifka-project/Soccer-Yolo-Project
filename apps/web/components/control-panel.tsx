@@ -18,7 +18,9 @@ export function ControlPanel() {
     error,
     isRealtimeMode,
     videoData,
-    sessionId
+    sessionId,
+    backendMode,
+    workerInfo,
   } = useSessionStore()
 
   const handleStart = async () => {
@@ -40,19 +42,25 @@ export function ControlPanel() {
 
   return (
     <div className="space-y-4">
+      <div className={`text-xs rounded p-2 ${backendMode === 'worker' ? 'bg-green-50 text-green-800' : 'bg-amber-50 text-amber-800'}`}>
+        {backendMode === 'worker'
+          ? `YOLO26 worker connected${workerInfo?.device ? ` (${workerInfo.device})` : ''}`
+          : 'Demo mode: Vercel cannot run YOLO. Start the local worker for real tracking.'}
+      </div>
+
       <div>
         <Label className="text-base font-medium">Tracking Mode</Label>
         <RadioGroup value={mode} onValueChange={setMode} className="mt-2">
           <div className="flex items-center space-x-2">
             <RadioGroupItem value="preview" id="preview" />
             <Label htmlFor="preview" className="font-normal">
-              Preview (Fast, Lower Quality)
+              Preview (YOLO26s, faster)
             </Label>
           </div>
           <div className="flex items-center space-x-2">
             <RadioGroupItem value="publish" id="publish" />
             <Label htmlFor="publish" className="font-normal">
-              Publish (Slow, High Quality)
+              Publish (YOLO26m, higher quality)
             </Label>
           </div>
         </RadioGroup>
@@ -111,14 +119,13 @@ export function ControlPanel() {
 
       {isRealtime && (
         <div className="text-blue-500 text-sm p-2 bg-blue-50 rounded">
-          Real-time tracking active - smooth live tracking enabled!
+          Real-time tracking active
         </div>
       )}
 
-      {/* Debug info */}
       <div className="text-xs text-gray-500 space-y-1">
-        <div>Session: {hasSession ? '✅' : '❌'}</div>
-        <div>Video: {hasVideo ? '✅' : '❌'}</div>
+        <div>Session: {hasSession ? 'yes' : 'no'}</div>
+        <div>Video: {hasVideo ? 'yes' : 'no'}</div>
         <div>Status: {processingStatus}</div>
         {sessionId && <div>ID: {sessionId.slice(0, 8)}...</div>}
       </div>

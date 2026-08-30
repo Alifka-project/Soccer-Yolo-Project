@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { BackendMode, WORKER_HTTP, hasWorkerConfig, workerHttpUrl, workerWsUrl } from './config'
+import { generateDemoAnalytics, runDemoJob } from './demo-engine'
 
 interface PossessionStats {
   team_a_possession: number
@@ -28,6 +30,13 @@ interface AnalyticsData {
   timestamp: number
 }
 
+interface WorkerInfo {
+  model_family?: string
+  model_preview?: string
+  model_publish?: string
+  device?: string
+}
+
 interface SessionState {
   sessionId: string | null
   ttl: number
@@ -36,7 +45,7 @@ interface SessionState {
   tracks: Map<string, any>
   calibration: any
   jobId: string | null
-  wsConnection: WebSocket | null
+  wsConnection: WebSocket | EventSource | null
   realtimeConnection: WebSocket | null
   processingStatus: 'idle' | 'processing' | 'completed' | 'error' | 'realtime'
   progress: number
@@ -46,7 +55,9 @@ interface SessionState {
   isRealtimeMode: boolean
   realtimeFrameUrl: string | null
   analyticsData: AnalyticsData | null
-  
+  backendMode: BackendMode
+  workerInfo: WorkerInfo | null
+
   createSession: () => Promise<void>
   uploadVideo: (file: File) => Promise<void>
   startTracking: (mode: string) => Promise<void>
@@ -58,10 +69,17 @@ interface SessionState {
   setCurrentFrame: (frame: number) => void
 }
 
-// Use Next.js API routes for Vercel deployment
-const API_BASE = process.env.NODE_ENV === 'production' 
-  ? '' // Use relative URLs in production
-  : 'http://localhost:3000' // Use localhost in development
+function newSessionId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID()
+  }
+  return `session-${Date.now()}`
+}
+
+function publishAnalytics(analytics: AnalyticsData | null) {
+  if (!analytics || typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('analyticsUpdate', { detail: analytics }))
+}
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessionId: null,
@@ -81,236 +99,389 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   isRealtimeMode: false,
   realtimeFrameUrl: null,
   analyticsData: null,
+  backendMode: hasWorkerConfig() ? 'worker' : 'demo',
+  workerInfo: null,
 
   createSession: async () => {
+    const fallbackId = newSessionId()
+
+    if (!hasWorkerConfig()) {
+      set({
+        sessionId: fallbackId,
+        ttl: 1800,
+        backendMode: 'demo',
+        workerInfo: null,
+        error: null,
+        processingStatus: 'idle',
+      })
+      return
+    }
+
     try {
-      console.log('Creating session...')
-      const res = await fetch(`${API_BASE}/api/sessions`, {
+      const healthRes = await fetch(workerHttpUrl('/health'), { cache: 'no-store' })
+      if (!healthRes.ok) {
+        throw new Error(`Worker health check failed (${healthRes.status})`)
+      }
+      const workerInfo = await healthRes.json()
+
+      const res = await fetch(workerHttpUrl('/sessions'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
+        body: JSON.stringify({}),
       })
-      
       if (!res.ok) {
-        throw new Error(`Session creation failed: ${res.status} ${res.statusText}`)
+        throw new Error(`Session creation failed: ${res.status}`)
       }
-      
       const data = await res.json()
-      console.log('Session created:', data)
-      set({ sessionId: data.sessionId, ttl: data.ttlSeconds })
+      set({
+        sessionId: data.sessionId,
+        ttl: data.ttlSeconds || 1800,
+        backendMode: 'worker',
+        workerInfo,
+        error: null,
+        processingStatus: 'idle',
+      })
     } catch (error) {
-      console.error('Session creation error:', error)
-      set({ 
-        error: `Session creation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        processingStatus: 'error'
+      console.warn('Worker unavailable, using dashboard demo mode', error)
+      set({
+        sessionId: fallbackId,
+        ttl: 1800,
+        backendMode: 'demo',
+        workerInfo: null,
+        error: null,
+        processingStatus: 'idle',
       })
     }
   },
 
   uploadVideo: async (file: File) => {
-    const { sessionId } = get()
+    const { sessionId, backendMode, videoUrl: previousUrl } = get()
     if (!sessionId) {
-      console.error('No session ID available for upload')
-      set({ 
+      set({
         error: 'No session available. Please refresh the page.',
-        processingStatus: 'error'
+        processingStatus: 'error',
       })
       return
     }
 
-    console.log('Uploading video for session:', sessionId, 'File:', file.name, 'Size:', file.size)
+    if (previousUrl) {
+      URL.revokeObjectURL(previousUrl)
+    }
+
+    const localUrl = URL.createObjectURL(file)
+    set({
+      videoData: {
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      },
+      videoUrl: localUrl,
+      processingStatus: 'idle',
+      error: null,
+      tracks: new Map(),
+      analyticsData: null,
+      progress: 0,
+    })
+
+    if (backendMode !== 'worker') {
+      return
+    }
 
     try {
-      set({ processingStatus: 'processing', progress: 0 })
-      
       const formData = new FormData()
       formData.append('file', file)
-
-      const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/upload`, {
+      const res = await fetch(workerHttpUrl(`/sessions/${sessionId}/upload`), {
         method: 'POST',
-        body: formData
+        body: formData,
       })
-      
       if (!res.ok) {
         const errorText = await res.text()
         throw new Error(`Upload failed: ${res.status} ${res.statusText} - ${errorText}`)
       }
-      
-      const data = await res.json()
-      console.log('Upload response:', data)
-      
-      // Set video data (demo mode - no actual video URL needed)
-      console.log('Video uploaded successfully')
-      
-      set({ 
-        videoData: { 
-          size: data.receivedBytes,
-          name: data.metadata?.name || file.name,
-          type: data.metadata?.type || file.type
-        },
-        videoUrl: null, // Demo mode - no actual video streaming
-        processingStatus: 'idle',
-        error: null
-      })
     } catch (error) {
       console.error('Video upload error:', error)
-      set({ 
-        error: `Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        processingStatus: 'error'
+      set({
+        error: `Worker upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        processingStatus: 'error',
       })
     }
   },
 
   startTracking: async (mode: string) => {
-    const { sessionId } = get()
+    const { sessionId, videoData, backendMode } = get()
     if (!sessionId) return
+    if (!videoData) {
+      set({
+        error: 'No video uploaded. Please upload a video first.',
+        processingStatus: 'error',
+      })
+      return
+    }
 
     try {
       set({ processingStatus: 'processing', progress: 0, error: null })
-      
-      const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/jobs`, {
+
+      if (backendMode !== 'worker') {
+        const result = await runDemoJob((pct) => set({ progress: pct }))
+        const tracks = new Map(Object.entries(result.tracks))
+        set({
+          processingStatus: 'completed',
+          progress: 100,
+          tracks,
+          analyticsData: result.analytics,
+          totalFrames: result.totalFrames,
+        })
+        publishAnalytics(result.analytics)
+        return
+      }
+
+      const res = await fetch(workerHttpUrl(`/sessions/${sessionId}/jobs`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, tracker: 'bytetrack' })
+        body: JSON.stringify({ mode, tracker: 'bytetrack' }),
       })
-      
       if (!res.ok) {
         throw new Error(`HTTP error! status: ${res.status}`)
       }
-      
       const data = await res.json()
       set({ jobId: data.jobId })
-      
-      // Connect WebSocket
       get().connectWebSocket()
     } catch (error) {
       console.error('Error starting tracking:', error)
-      set({ 
-        processingStatus: 'error', 
-        error: error instanceof Error ? error.message : 'Unknown error occurred' 
+      set({
+        processingStatus: 'error',
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
       })
     }
   },
 
   connectWebSocket: () => {
-    const { sessionId, jobId } = get()
+    const { sessionId, jobId, backendMode } = get()
     if (!sessionId || !jobId) return
 
-    // Use Server-Sent Events for Vercel compatibility
-    const eventSource = new EventSource(`${API_BASE}/api/sessions/${sessionId}/stream?jobId=${jobId}`)
-    
-    eventSource.onopen = () => {
-      console.log('EventSource connected')
-      set({ wsConnection: eventSource as any })
+    if (backendMode === 'worker') {
+      const socket = new WebSocket(workerWsUrl(`/sessions/${sessionId}/stream?jobId=${jobId}`))
+
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.type === 'PROGRESS') {
+            set({ progress: data.pct })
+            return
+          }
+          if (data.type === 'DONE') {
+            const tracks = new Map(Object.entries(data.summary?.tracks || {}))
+            const analytics = {
+              frame_id: data.summary?.total_frames || 0,
+              possession_stats: data.summary?.possession_stats,
+              pass_stats: data.summary?.pass_stats,
+              tracking_data: [],
+              timestamp: Date.now() / 1000,
+            }
+            set({
+              processingStatus: 'completed',
+              progress: 100,
+              tracks,
+              totalFrames: data.summary?.total_frames || 0,
+              analyticsData: analytics,
+              wsConnection: null,
+            })
+            publishAnalytics(analytics)
+            socket.close()
+            return
+          }
+          if (data.type === 'ERROR') {
+            set({
+              processingStatus: 'error',
+              error: data.message || 'Processing error occurred',
+            })
+            socket.close()
+          }
+        } catch (error) {
+          console.error('Error parsing worker message:', error)
+        }
+      }
+
+      socket.onerror = () => {
+        set({
+          processingStatus: 'error',
+          error: 'Lost connection to the YOLO worker while processing.',
+        })
+      }
+
+      set({ wsConnection: socket })
+      return
     }
-    
+
+    const eventSource = new EventSource(`/api/sessions/${sessionId}/stream?jobId=${jobId}`)
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
-        console.log('SSE message:', data)
-        
-        switch (data.type) {
-          case 'PROGRESS':
-            set({ progress: data.pct })
-            break
-          case 'DONE':
-            set({ 
-              processingStatus: 'completed', 
-              progress: 100,
-              tracks: new Map(Object.entries(data.summary.tracks || {})),
-              totalFrames: data.summary.total_frames || 0
-            })
-            eventSource.close()
-            break
-          case 'ERROR':
-            set({ 
-              processingStatus: 'error', 
-              error: data.message || 'Processing error occurred' 
-            })
-            eventSource.close()
-            break
+        if (data.type === 'PROGRESS') {
+          set({ progress: data.pct })
+        } else if (data.type === 'DONE') {
+          const tracks = new Map(Object.entries(data.summary?.tracks || {}))
+          const analytics = generateDemoAnalytics(data.summary?.tracks || {})
+          set({
+            processingStatus: 'completed',
+            progress: 100,
+            tracks,
+            totalFrames: data.summary?.total_frames || 240,
+            analyticsData: analytics,
+          })
+          publishAnalytics(analytics)
+          eventSource.close()
+        } else if (data.type === 'ERROR') {
+          set({
+            processingStatus: 'error',
+            error: data.message || 'Processing error occurred',
+          })
+          eventSource.close()
         }
       } catch (error) {
         console.error('Error parsing SSE message:', error)
       }
     }
-    
-    eventSource.onerror = (error) => {
-      console.error('EventSource error:', error)
-      set({ 
-        processingStatus: 'error', 
-        error: 'Connection error occurred' 
+    eventSource.onerror = () => {
+      set({
+        processingStatus: 'error',
+        error: 'Connection error occurred',
       })
       eventSource.close()
     }
+    set({ wsConnection: eventSource as any })
   },
 
   startRealtimeTracking: async () => {
-    const { sessionId, videoData } = get()
+    const { sessionId, videoData, backendMode } = get()
     if (!sessionId) {
-      set({ 
+      set({
         error: 'No session available. Please refresh the page.',
-        processingStatus: 'error'
+        processingStatus: 'error',
       })
       return
     }
-    
     if (!videoData) {
-      set({ 
+      set({
         error: 'No video uploaded. Please upload a video first.',
-        processingStatus: 'error'
+        processingStatus: 'error',
       })
+      return
+    }
+
+    if (backendMode !== 'worker') {
+      set({
+        processingStatus: 'realtime',
+        isRealtimeMode: true,
+        error: null,
+      })
+      const result = await runDemoJob((pct) => set({ progress: pct }))
+      const tracks = new Map(Object.entries(result.tracks))
+      set({
+        tracks,
+        analyticsData: result.analytics,
+        totalFrames: result.totalFrames,
+      })
+      publishAnalytics(result.analytics)
       return
     }
 
     try {
-      console.log('Starting real-time tracking for session:', sessionId)
-      set({ 
-        processingStatus: 'realtime', 
+      set({
+        processingStatus: 'realtime',
         isRealtimeMode: true,
-        error: null 
+        error: null,
       })
-      
-      // Connect to real-time WebSocket
       get().connectRealtimeWebSocket()
     } catch (error) {
       console.error('Error starting real-time tracking:', error)
-      set({ 
-        processingStatus: 'error', 
-        error: error instanceof Error ? error.message : 'Unknown error occurred' 
+      set({
+        processingStatus: 'error',
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
       })
     }
   },
 
   stopRealtimeTracking: () => {
-    const { realtimeConnection } = get()
+    const { realtimeConnection, realtimeFrameUrl } = get()
     if (realtimeConnection) {
       realtimeConnection.close()
     }
-    set({ 
+    if (realtimeFrameUrl) {
+      URL.revokeObjectURL(realtimeFrameUrl)
+    }
+    set({
       processingStatus: 'idle',
       isRealtimeMode: false,
-      realtimeConnection: null
+      realtimeConnection: null,
+      realtimeFrameUrl: null,
     })
   },
 
   connectRealtimeWebSocket: () => {
-    const { sessionId } = get()
-    if (!sessionId) return
+    const { sessionId, realtimeConnection, realtimeFrameUrl } = get()
+    if (!sessionId || !WORKER_HTTP) {
+      set({
+        processingStatus: 'error',
+        error: 'Real-time tracking needs the YOLO worker. Start the worker or use batch tracking.',
+      })
+      return
+    }
 
-    // Close existing connection if any
-    const { realtimeConnection } = get()
     if (realtimeConnection) {
       realtimeConnection.close()
     }
+    if (realtimeFrameUrl) {
+      URL.revokeObjectURL(realtimeFrameUrl)
+    }
 
-    // Note: Real-time WebSocket not supported in Vercel serverless mode
-    // This would need to be replaced with Server-Sent Events or external WebSocket service
-    console.log('Real-time WebSocket not available in serverless mode')
-    set({ 
-      processingStatus: 'error', 
-      error: 'Real-time mode not supported in Vercel deployment. Use file upload mode instead.' 
-    })
+    const socket = new WebSocket(workerWsUrl(`/sessions/${sessionId}/realtime`))
+    socket.binaryType = 'arraybuffer'
+
+    socket.onmessage = (event) => {
+      if (typeof event.data === 'string') {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.type === 'ERROR') {
+            set({ processingStatus: 'error', error: data.message, isRealtimeMode: false })
+            socket.close()
+            return
+          }
+          if (data.type === 'analytics' || data.possession_stats) {
+            const analytics = {
+              frame_id: data.frame_id,
+              possession_stats: data.possession_stats,
+              pass_stats: data.pass_stats,
+              tracking_data: data.tracking_data || [],
+              timestamp: data.timestamp || Date.now() / 1000,
+            }
+            set({ analyticsData: analytics })
+            publishAnalytics(analytics)
+          }
+        } catch (error) {
+          console.error('Error parsing realtime message:', error)
+        }
+        return
+      }
+
+      const blob = new Blob([event.data], { type: 'image/jpeg' })
+      const nextUrl = URL.createObjectURL(blob)
+      const previous = get().realtimeFrameUrl
+      set({ realtimeFrameUrl: nextUrl })
+      if (previous) {
+        URL.revokeObjectURL(previous)
+      }
+    }
+
+    socket.onerror = () => {
+      set({
+        processingStatus: 'error',
+        error: 'Real-time worker connection failed.',
+        isRealtimeMode: false,
+      })
+    }
+
+    set({ realtimeConnection: socket })
   },
 
   setCurrentFrame: (frame: number) => {
@@ -318,12 +489,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   reset: () => {
-    const { wsConnection, realtimeConnection } = get()
+    const { wsConnection, realtimeConnection, videoUrl, realtimeFrameUrl } = get()
     if (wsConnection) {
       wsConnection.close()
     }
     if (realtimeConnection) {
       realtimeConnection.close()
+    }
+    if (videoUrl) {
+      URL.revokeObjectURL(videoUrl)
+    }
+    if (realtimeFrameUrl) {
+      URL.revokeObjectURL(realtimeFrameUrl)
     }
     set({
       sessionId: null,
@@ -339,8 +516,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       error: null,
       currentFrame: 0,
       totalFrames: 0,
-      isRealtimeMode: false
+      isRealtimeMode: false,
+      realtimeFrameUrl: null,
+      analyticsData: null,
     })
-  }
+    get().createSession()
+  },
 }))
-

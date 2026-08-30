@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 
 export function Header() {
-  const { sessionId, ttl, reset } = useSessionStore()
+  const { sessionId, ttl, reset, backendMode } = useSessionStore()
 
   return (
     <header className="h-14 border-b px-4 flex items-center justify-between">
@@ -16,11 +16,14 @@ export function Header() {
             Session TTL: {Math.floor(ttl / 60)}m
           </Badge>
         )}
+        <Badge variant={backendMode === 'worker' ? 'default' : 'outline'}>
+          {backendMode === 'worker' ? 'YOLO26' : 'Demo'}
+        </Badge>
       </div>
       
       <div className="flex items-center gap-2">
         <Badge variant="outline" className="cursor-pointer">
-          <a href="https://github.com/your-repo" target="_blank" rel="noopener">
+          <a href="https://github.com/Alifka-project/Soccer-Yolo-Project" target="_blank" rel="noopener noreferrer">
             AGPL Open-Source
           </a>
         </Badge>

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useEffect } from 'react'
 import { VideoUpload } from '@/components/video-upload'
 import { VideoPlayer } from '@/components/video-player'
 import { ControlPanel } from '@/components/control-panel'

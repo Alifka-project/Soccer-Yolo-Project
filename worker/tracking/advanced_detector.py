@@ -3,15 +3,25 @@ import numpy as np
 import cv2
 from typing import List, Dict, Tuple
 import time
+from tracking.model_config import (
+    BALL_CLASS_ID,
+    PERSON_CLASS_ID,
+    get_device,
+    get_model_name,
+    use_half_precision,
+    weights_path,
+)
 
 class AdvancedYOLODetector:
-    """Advanced YOLO11 detector optimized for soccer tracking"""
+    """Advanced YOLO26 detector optimized for soccer tracking"""
     
-    def __init__(self, model_name: str = "yolo11n", conf_thresh: float = 0.3):
+    def __init__(self, model_name: str = None, conf_thresh: float = 0.3):
         """Initialize YOLO detector with advanced settings"""
-        self.model_name = model_name
+        self.model_name = model_name or get_model_name("preview")
         self.conf_thresh = conf_thresh
-        self.model = YOLO(f"{model_name}.pt")
+        self.device = get_device()
+        self.half = use_half_precision(self.device)
+        self.model = YOLO(weights_path(self.model_name))
         
         # Performance tracking
         self.frame_count = 0
@@ -23,8 +33,8 @@ class AdvancedYOLODetector:
         
         # Class-specific confidence thresholds
         self.class_thresholds = {
-            0: 0.25,  # person - lower threshold for better recall
-            32: 0.4   # ball - higher threshold for precision
+            PERSON_CLASS_ID: 0.25,  # person - lower threshold for better recall
+            BALL_CLASS_ID: 0.4   # ball - higher threshold for precision
         }
         
         # Frame preprocessing settings
@@ -45,8 +55,9 @@ class AdvancedYOLODetector:
                 conf=self.conf_thresh,
                 verbose=False,
                 imgsz=self.target_size,
-                half=False,  # Disable half precision to avoid CPU errors
-                device='cpu'  # Force CPU for consistency
+                half=self.half,
+                device=self.device,
+                classes=[PERSON_CLASS_ID, BALL_CLASS_ID],
             )
             
             # Process results
@@ -119,7 +130,7 @@ class AdvancedYOLODetector:
                     cls = int(box.cls[0].cpu().numpy())
                     
                     # Filter for soccer-relevant classes
-                    if cls in [0, 32]:  # person, ball
+                    if cls in [PERSON_CLASS_ID, BALL_CLASS_ID]:  # person, ball
                         # Apply class-specific threshold
                         class_thresh = self.class_thresholds.get(cls, self.conf_thresh)
                         if conf < class_thresh:
@@ -135,7 +146,7 @@ class AdvancedYOLODetector:
                         bbox = [x1, y1, x2 - x1, y2 - y1]
                         
                         # Determine class name
-                        class_name = 'person' if cls == 0 else 'ball'
+                        class_name = 'person' if cls == PERSON_CLASS_ID else 'ball'
                         
                         detections.append({
                             'bbox': bbox,
