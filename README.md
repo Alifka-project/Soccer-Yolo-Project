@@ -65,6 +65,35 @@ The analytics layer itself is not the constraint: a full re-derivation over 22
 players carrying 160 samples each costs about **2 ms**, against the 260 ms live
 update budget (`npm run test:perf`).
 
+### Distances, and what they are worth
+
+Every metric in metres — player distance, speed, team width and depth, pass
+length, separation, area covered — goes through a perspective model rather than
+one pixels-per-metre number.
+
+A single scalar is only correct at one depth. On a broadcast angle the ground
+recedes, so a player at the top of frame is half the height of one on the near
+touchline and a vertical pixel up there spans several times more turf. Applying
+one scale everywhere measured a team spread across the pitch as five metres
+wide. Players are a known height, so their apparent height at each image row is
+a ruler for that row: fitting height against row recovers scale as a function of
+depth, and integrating along the vertical span converts distances honestly.
+
+These remain estimates. Without detecting pitch markings there is no true
+homography, so treat them as well-founded approximations — good for comparing
+players and passages within a clip, not for adjudicating a transfer fee. The
+model reports whether it managed to calibrate; when too few players are visible
+at differing depths it falls back to the flat scale.
+
+### Which way each team is playing
+
+Teams are labelled A and B by jersey colour, which says nothing about direction
+of play. Attacking-third share and formation bands are read relative to the end
+each side is actually defending, inferred from which team is sitting deeper.
+Assuming a fixed direction made both wrong whenever the colour clustering landed
+the other way round, and the tests mirror the pitch to check the reading does
+not change.
+
 ### How possession is measured
 
 One sequence covers the whole clip. Every sampled frame gets an owner: the player

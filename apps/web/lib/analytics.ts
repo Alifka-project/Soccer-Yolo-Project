@@ -119,6 +119,17 @@ export interface MatchEvent {
   detail: string
 }
 
+export interface TeamShapeSummary {
+  name: string
+  count: number
+  /** Lateral spread in pixels; widthM is the same figure in metres. */
+  width: number
+  depth: number
+  widthM: number
+  depthM: number
+  center: { x: number; y: number }
+}
+
 export interface DerivedAnalytics {
   ready: boolean
   events: MatchEvent[]
@@ -155,26 +166,19 @@ export interface DerivedAnalytics {
     source: PossessionSource
   }
   team: {
-    teamA: {
-      name: string
-      count: number
-      width: number
-      depth: number
-      center: { x: number; y: number }
-    }
-    teamB: {
-      name: string
-      count: number
-      width: number
-      depth: number
-      center: { x: number; y: number }
-    }
+    teamA: TeamShapeSummary
+    teamB: TeamShapeSummary
     separation: number
+    /** Distance between team centroids, in metres. */
+    separationM: number
+    /** True when team A is the side defending the low-x end of the frame. */
+    aDefendsLowX: boolean
   }
   teamColors: { team_a: string; team_b: string }
   teamLabels: { team_a: string; team_b: string }
   extras: {
     sprints: number
+    /** Area of each team's bounding box, in square metres. */
     compactnessA: number
     compactnessB: number
     attackingThirdA: number
@@ -422,41 +426,104 @@ export function computeWinProbability(input: {
 const AVERAGE_PLAYER_HEIGHT_M = 1.8
 
 /**
- * Pixel-to-metre scale, estimated from how tall the players are on screen.
+ * Converts image distances to metres with a correction for perspective.
  *
- * Deriving it from the spread of tracked positions assumes the full 105m pitch
- * width is in shot, which is wrong for any zoomed broadcast angle and inflates
- * every distance and speed by the zoom factor. Player height is roughly
- * constant in the real world, so the median bounding-box height gives a scale
- * that holds at any zoom level.
+ * A single pixels-per-metre scalar is only valid at one depth. On a broadcast
+ * angle the ground recedes, so players near the top of frame are smaller and a
+ * vertical pixel there spans several times more turf than one near the touchline.
+ * Applying one scale to the whole frame made a team spread across the pitch
+ * measure five metres wide.
+ *
+ * Players are a known height, so their apparent height at each image row is a
+ * ruler for that row. Fitting height against row gives scale as a function of
+ * depth; integrating 1/height along the vertical span converts it honestly.
  */
-function metersPerPixel(tracks: NormalizedTrack[]) {
-  const heights: number[] = []
+export interface PitchScale {
+  /** Metres per pixel at a given image row. */
+  at: (y: number) => number
+  /** Metres between two image points, integrating the vertical span. */
+  distance: (a: { x: number; y: number }, b: { x: number; y: number }) => number
+  /** Fallback scale, for callers that only need one number. */
+  median: number
+  /** True when enough players were seen at differing depths to fit perspective. */
+  calibrated: boolean
+}
+
+function buildPitchScale(tracks: NormalizedTrack[]): PitchScale {
+  const samples: Array<{ y: number; h: number }> = []
   tracks.forEach((track) => {
     if (!isPerson(track)) return
     track.positions.forEach((pos) => {
-      if (pos.h > 4) heights.push(pos.h)
+      if (pos.h > 4) samples.push({ y: pos.y + pos.h, h: pos.h })
     })
   })
 
-  if (heights.length >= 8) {
-    const typical = median(heights)
-    if (typical > 4) return AVERAGE_PLAYER_HEIGHT_M / typical
+  const heights = samples.map((sample) => sample.h)
+  const medianHeight = heights.length ? median(heights) : 0
+  const fallback = medianHeight > 4 ? AVERAGE_PLAYER_HEIGHT_M / medianHeight : 105 / 1280
+
+  // Least-squares fit of apparent height against image row.
+  let slope = 0
+  let intercept = medianHeight
+  let calibrated = false
+  if (samples.length >= 12) {
+    const n = samples.length
+    const meanY = samples.reduce((sum, s) => sum + s.y, 0) / n
+    const meanH = samples.reduce((sum, s) => sum + s.h, 0) / n
+    let num = 0
+    let den = 0
+    for (const sample of samples) {
+      num += (sample.y - meanY) * (sample.h - meanH)
+      den += (sample.y - meanY) ** 2
+    }
+    if (den > 1) {
+      const a = num / den
+      const b = meanH - a * meanY
+      const ySpread = Math.max(...samples.map((s) => s.y)) - Math.min(...samples.map((s) => s.y))
+      // Only trust the fit when players were actually seen at different depths
+      // and it stays positive across the observed range.
+      if (a > 0 && ySpread > 40 && b + a * Math.min(...samples.map((s) => s.y)) > 3) {
+        slope = a
+        intercept = b
+        calibrated = true
+      }
+    }
   }
 
-  const xs = tracks.flatMap((track) => track.positions.map((pos) => center(pos).x))
-  if (xs.length < 4) return 105 / 1280
-  return 105 / Math.max(Math.max(...xs) - Math.min(...xs), 200)
+  const heightAt = (y: number) => Math.max(slope * y + intercept, 3)
+  const at = (y: number) => (calibrated ? AVERAGE_PLAYER_HEIGHT_M / heightAt(y) : fallback)
+
+  const verticalMetres = (y1: number, y2: number) => {
+    const lo = Math.min(y1, y2)
+    const hi = Math.max(y1, y2)
+    if (!calibrated || slope <= 0) return (hi - lo) * fallback
+    const top = heightAt(lo)
+    const bottom = heightAt(hi)
+    // Integral of 1/(slope*y + intercept) dy, scaled to metres.
+    return (AVERAGE_PLAYER_HEIGHT_M / slope) * Math.log(bottom / top)
+  }
+
+  const distance = (a: { x: number; y: number }, b: { x: number; y: number }) => {
+    const dy = verticalMetres(a.y, b.y)
+    // Horizontal scale is taken at the midpoint row, where the span sits.
+    const dx = (b.x - a.x) * at((a.y + b.y) / 2)
+    return Math.sqrt(dx * dx + dy * dy)
+  }
+
+  return { at, distance, median: fallback, calibrated }
 }
 
-function playerMetrics(tracks: NormalizedTrack[], fps: number, mpp: number): PlayerMetric[] {
+function playerMetrics(tracks: NormalizedTrack[], fps: number, scale: PitchScale): PlayerMetric[] {
   const safeFps = Math.max(fps, 1)
-  const sprintThreshold = 7 / Math.max(mpp, 0.01) // ~7 m/s in px/s
+  const SPRINT_MS = 7
+  const IMPLAUSIBLE_MS = 14
   return tracks
     .filter((track) => isPerson(track) && track.positions.length >= 2)
     .map((track) => {
       let distance = 0
+      let distanceMetres = 0
       let maxSpeed = 0
+      let maxSpeedMetres = 0
       let sprints = 0
       let inSprint = false
       let fastStreak = 0
@@ -469,10 +536,15 @@ function playerMetrics(tracks: NormalizedTrack[], fps: number, mpp: number): Pla
           continue
         }
         distance += step
+        // Converted per step, at the depth the step happened.
+        const stepMetres = scale.distance(prev, curr)
+        distanceMetres += stepMetres
         const dt = Math.max((track.positions[i].frame - track.positions[i - 1].frame) / safeFps, 1 / safeFps)
         const speed = step / dt
+        const speedMetres = stepMetres / dt
         maxSpeed = Math.max(maxSpeed, speed)
-        const sprinting = speed > sprintThreshold && speed < 14 / Math.max(mpp, 0.01)
+        maxSpeedMetres = Math.max(maxSpeedMetres, speedMetres)
+        const sprinting = speedMetres > SPRINT_MS && speedMetres < IMPLAUSIBLE_MS
         // Two consecutive fast samples: a single one is usually a detector
         // wobble or an identity swap, not a player accelerating away.
         if (sprinting && fastStreak === 1 && !inSprint) {
@@ -493,11 +565,11 @@ function playerMetrics(tracks: NormalizedTrack[], fps: number, mpp: number): Pla
         frames: track.positions.length,
         timeOnField,
         distancePx: distance,
-        distanceM: distance * mpp,
+        distanceM: distanceMetres,
         avgSpeed: timeOnField > 0 ? distance / timeOnField : 0,
         maxSpeed,
-        avgSpeedM: timeOnField > 0 ? (distance * mpp) / timeOnField : 0,
-        maxSpeedM: maxSpeed * mpp,
+        avgSpeedM: timeOnField > 0 ? distanceMetres / timeOnField : 0,
+        maxSpeedM: maxSpeedMetres,
         sprints,
         lastPosition: last,
       }
@@ -531,32 +603,53 @@ function formationName(players: Array<{ x: number }>, defendLowX: boolean) {
   return `${bands[0]}-${bands[1]}-${bands[2]}`
 }
 
-function teamStats(tracks: NormalizedTrack[]) {
+function teamStats(tracks: NormalizedTrack[], scale: PitchScale) {
   const latest = latestPositions(tracks)
   const teamA = latest.filter((player) => player.team === 'team_a')
   const teamB = latest.filter((player) => player.team === 'team_b')
 
+  // Which end a side attacks cannot be assumed. Teams are labelled A and B by
+  // jersey colour, which says nothing about direction of play, so hardcoding
+  // "A attacks right" made formations and attacking-third shares wrong
+  // whenever the clustering happened to land the other way round. The side
+  // sitting deeper is the one defending that end.
+  const meanAX = teamA.length ? mean(teamA.map((player) => player.x)) : null
+  const meanBX = teamB.length ? mean(teamB.map((player) => player.x)) : null
+  const aDefendsLowX = meanAX != null && meanBX != null ? meanAX < meanBX : true
+
   const summarize = (players: typeof teamA, defendLowX: boolean) => {
     if (players.length === 0) {
-      return { name: '—', count: 0, width: 0, depth: 0, center: { x: 0, y: 0 } }
+      return { name: '—', count: 0, width: 0, depth: 0, widthM: 0, depthM: 0, center: { x: 0, y: 0 } }
     }
     const xs = players.map((player) => player.x)
     const ys = players.map((player) => player.y)
+    const width = Math.max(...ys) - Math.min(...ys)
+    const depth = Math.max(...xs) - Math.min(...xs)
+    const midY = mean(ys)
+    // Width runs across the image (into depth); depth runs along it.
+    const widthM = scale.distance({ x: 0, y: Math.min(...ys) }, { x: 0, y: Math.max(...ys) })
+    const depthM = scale.distance({ x: Math.min(...xs), y: midY }, { x: Math.max(...xs), y: midY })
     return {
       name: formationName(players, defendLowX),
       count: players.length,
-      width: Math.round(Math.max(...ys) - Math.min(...ys)),
-      depth: Math.round(Math.max(...xs) - Math.min(...xs)),
+      width: Math.round(width),
+      depth: Math.round(depth),
+      widthM,
+      depthM,
       center: { x: mean(xs), y: mean(ys) },
     }
   }
 
-  const a = summarize(teamA, true)
-  const b = summarize(teamB, false)
+  const a = summarize(teamA, aDefendsLowX)
+  const b = summarize(teamB, !aDefendsLowX)
+  const separation = Math.abs(a.center.x - b.center.x)
+  const separationM = a.count && b.count ? scale.distance(a.center, b.center) : 0
   return {
     teamA: a,
     teamB: b,
-    separation: Math.round(Math.abs(a.center.x - b.center.x)),
+    separation: Math.round(separation),
+    separationM,
+    aDefendsLowX,
   }
 }
 
@@ -804,7 +897,7 @@ function ownerSequence(
 }
 
 /** Turns a sequence of ball-owner samples into possession, passes and events. */
-function summarizeOwners(samples: OwnerSample[], fps: number, source: PossessionSource) {
+function summarizeOwners(samples: OwnerSample[], fps: number, source: PossessionSource, scale: PitchScale) {
   const safeFps = Math.max(fps, 1)
   let teamA = 0
   let teamB = 0
@@ -833,6 +926,7 @@ function summarizeOwners(samples: OwnerSample[], fps: number, source: Possession
       const gap = sample.frame - lastOwner.frame
       const time = sample.frame / safeFps
       const passDist = dist(center(lastOwner.pos), center(sample.pos))
+      const passMetres = scale.distance(center(lastOwner.pos), center(sample.pos))
       const withinPassWindow = gap <= Math.max(safeFps * 4, 12)
       // Below roughly a couple of body-widths the ball was taken off the
       // player rather than played: a tackle or a loose-ball duel, not a pass.
@@ -844,7 +938,7 @@ function summarizeOwners(samples: OwnerSample[], fps: number, source: Possession
           to_player: sample.id,
           successful: true,
           timestamp: time,
-          distance: passDist,
+          distance: passMetres,
           team: sample.team,
           frame: sample.frame,
         })
@@ -859,7 +953,7 @@ function summarizeOwners(samples: OwnerSample[], fps: number, source: Possession
           time,
           team: sample.team,
           label: `Pass P${lastOwner.id} → P${sample.id}`,
-          detail: `${Math.round(passDist)}px`,
+          detail: `${passMetres.toFixed(0)} m`,
         })
       } else if (lastOwner.team !== sample.team && hasAssignedTeam(lastOwner.team)) {
         // The ball changed team. If it travelled, the previous holder attempted
@@ -871,7 +965,7 @@ function summarizeOwners(samples: OwnerSample[], fps: number, source: Possession
             to_player: sample.id,
             successful: false,
             timestamp: time,
-            distance: passDist,
+            distance: passMetres,
             team: lastOwner.team,
             frame: sample.frame,
           })
@@ -950,6 +1044,7 @@ function possessionAndPasses(
   tracks: NormalizedTrack[],
   fps: number,
   resolution: [number, number] | null,
+  scale: PitchScale,
 ) {
   const ball = tracks.find((track) => track.class === 'ball' && track.positions.length > 0)
   const people = tracks.filter((track) => isPerson(track) && track.positions.length > 0)
@@ -969,7 +1064,7 @@ function possessionAndPasses(
   const { samples, coverage } = ownerSequence(people, ball, resolution, fps)
   // Report the model that actually drove most of the samples.
   const source: PossessionSource = coverage >= 0.5 ? 'ball' : 'proximity'
-  const summary = summarizeOwners(samples, fps, source)
+  const summary = summarizeOwners(samples, fps, source, scale)
   return { ...summary, ballDetected, ballCoverage: coverage }
 }
 
@@ -1002,13 +1097,13 @@ export function deriveAnalytics(
   const labeled = keepActiveTracks(
     assignTeams(collectTracks(tracksMap, analyticsData?.tracking_data, analyticsData?.frame_id || 0)),
   )
-  const mpp = metersPerPixel(labeled)
-  const players = playerMetrics(labeled, fps, mpp)
-  const team = teamStats(labeled)
+  const scale = buildPitchScale(labeled)
+  const players = playerMetrics(labeled, fps, scale)
+  const team = teamStats(labeled, scale)
   const resolution = Array.isArray(analyticsData?.resolution) && analyticsData.resolution.length === 2
     ? ([Number(analyticsData.resolution[0]), Number(analyticsData.resolution[1])] as [number, number])
     : null
-  const computed = possessionAndPasses(labeled, fps, resolution)
+  const computed = possessionAndPasses(labeled, fps, resolution, scale)
 
   const workerPossession = analyticsData?.possession_stats
   const workerPasses = analyticsData?.pass_stats
@@ -1077,12 +1172,17 @@ export function deriveAnalytics(
   }
 
   const latest = latestPositions(labeled)
+  // Square metres: raw square pixels are not a quantity anyone can act on, and
+  // they change meaning with every camera zoom.
   const compactness = (side: 'team_a' | 'team_b') => {
     const pts = latest.filter((p) => p.team === side)
     if (pts.length < 2) return 0
     const xs = pts.map((p) => p.x)
     const ys = pts.map((p) => p.y)
-    return Math.round((Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys)))
+    const midY = mean(ys)
+    const widthM = scale.distance({ x: 0, y: Math.min(...ys) }, { x: 0, y: Math.max(...ys) })
+    const lengthM = scale.distance({ x: Math.min(...xs), y: midY }, { x: Math.max(...xs), y: midY })
+    return Math.round(widthM * lengthM)
   }
   const allX = latest.map((p) => p.x)
   const minX = allX.length ? Math.min(...allX) : 0
@@ -1111,8 +1211,8 @@ export function deriveAnalytics(
     possessionA: possession.team_a_percentage,
     possessionB: possession.team_b_percentage,
     possessionTime: possession.total_possession_time,
-    attackingA: attackingShare('team_a', true),
-    attackingB: attackingShare('team_b', false),
+    attackingA: attackingShare('team_a', team.aDefendsLowX),
+    attackingB: attackingShare('team_b', !team.aDefendsLowX),
     teamAPasses: passes.team_a_passes,
     teamBPasses: passes.team_b_passes,
     ballX: lastBall ? lastBall.x + lastBall.w / 2 : null,
@@ -1163,9 +1263,9 @@ export function deriveAnalytics(
       sprints: players.reduce((sum, player) => sum + player.sprints, 0),
       compactnessA: compactness('team_a'),
       compactnessB: compactness('team_b'),
-      attackingThirdA: attackingShare('team_a', true),
-      attackingThirdB: attackingShare('team_b', false),
-      metersPerPixel: mpp,
+      attackingThirdA: attackingShare('team_a', team.aDefendsLowX),
+      attackingThirdB: attackingShare('team_b', !team.aDefendsLowX),
+      metersPerPixel: scale.median,
       winA: win.team_a,
       winB: win.team_b,
       winConfidence: win.confidence,

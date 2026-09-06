@@ -243,7 +243,7 @@ export function SoccerAnalytics() {
             <div className="text-xs text-gray-600">Sprint bursts</div>
           </div>
           <div className="p-3 bg-gray-50 rounded-lg">
-            <div className="text-lg font-bold tabular-nums">{derived.team.separation}px</div>
+            <div className="text-lg font-bold tabular-nums">{fmt(derived.team.separationM, 0)} m</div>
             <div className="text-xs text-gray-600">Team separation</div>
           </div>
           <div className="p-3 rounded-lg" style={{ background: rgbaFromHex(colorA, 0.12) }}>

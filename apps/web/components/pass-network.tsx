@@ -116,7 +116,7 @@ export function PassNetwork() {
                         <span>P{pass.from_player} → P{pass.to_player}</span>
                         <div className="flex items-center gap-2">
                           <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
-                          <span className="text-gray-500 tabular-nums">{Math.round(pass.distance)}px</span>
+                          <span className="text-gray-500 tabular-nums">{fmt(pass.distance * derived.extras.metersPerPixel, 0)} m</span>
                           <Badge variant={pass.successful ? 'default' : 'destructive'} className="text-xs">
                             {pass.successful ? '✓' : '✗'}
                           </Badge>

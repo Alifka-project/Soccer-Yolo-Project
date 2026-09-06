@@ -28,7 +28,7 @@ export function TeamShape() {
     )
   }
 
-  const { teamA, teamB, separation } = derived.team
+  const { teamA, teamB } = derived.team
   const colorA = derived.teamColors.team_a
   const colorB = derived.teamColors.team_b
 
@@ -61,7 +61,7 @@ export function TeamShape() {
           </CardHeader>
           <CardContent className="pt-0 text-center">
             <div className="text-2xl font-bold" style={{ color: colorA }}>{teamA.name}</div>
-            <div className="text-xs text-gray-500">{teamA.count} players · compactness {derived.extras.compactnessA}</div>
+            <div className="text-xs text-gray-500">{teamA.count} players · {derived.extras.compactnessA} m² covered</div>
           </CardContent>
         </Card>
         <Card className="border-l-4" style={{ borderLeftColor: colorB }}>
@@ -70,7 +70,7 @@ export function TeamShape() {
           </CardHeader>
           <CardContent className="pt-0 text-center">
             <div className="text-2xl font-bold" style={{ color: colorB }}>{teamB.name}</div>
-            <div className="text-xs text-gray-500">{teamB.count} players · compactness {derived.extras.compactnessB}</div>
+            <div className="text-xs text-gray-500">{teamB.count} players · {derived.extras.compactnessB} m² covered</div>
           </CardContent>
         </Card>
       </div>
@@ -83,14 +83,14 @@ export function TeamShape() {
           <div className="grid grid-cols-2 gap-4 text-xs">
             <div className="space-y-2 p-2 rounded-lg" style={{ background: rgbaFromHex(colorA, 0.1) }}>
               <div className="font-medium" style={{ color: colorA }}>{derived.teamLabels.team_a}</div>
-              <div className="flex justify-between"><span>Width</span><span className="tabular-nums">{teamA.width}px</span></div>
-              <div className="flex justify-between"><span>Depth</span><span className="tabular-nums">{teamA.depth}px</span></div>
+              <div className="flex justify-between"><span>Width</span><span className="tabular-nums">{fmt(teamA.widthM, 0)} m</span></div>
+              <div className="flex justify-between"><span>Depth</span><span className="tabular-nums">{fmt(teamA.depthM, 0)} m</span></div>
               <div className="flex justify-between"><span>Attacking third</span><span className="tabular-nums">{fmt(derived.extras.attackingThirdA, 0)}%</span></div>
             </div>
             <div className="space-y-2 p-2 rounded-lg" style={{ background: rgbaFromHex(colorB, 0.1) }}>
               <div className="font-medium" style={{ color: colorB }}>{derived.teamLabels.team_b}</div>
-              <div className="flex justify-between"><span>Width</span><span className="tabular-nums">{teamB.width}px</span></div>
-              <div className="flex justify-between"><span>Depth</span><span className="tabular-nums">{teamB.depth}px</span></div>
+              <div className="flex justify-between"><span>Width</span><span className="tabular-nums">{fmt(teamB.widthM, 0)} m</span></div>
+              <div className="flex justify-between"><span>Depth</span><span className="tabular-nums">{fmt(teamB.depthM, 0)} m</span></div>
               <div className="flex justify-between"><span>Attacking third</span><span className="tabular-nums">{fmt(derived.extras.attackingThirdB, 0)}%</span></div>
             </div>
           </div>
@@ -102,9 +102,15 @@ export function TeamShape() {
           <CardTitle className="text-sm">Formation Overview</CardTitle>
         </CardHeader>
         <CardContent className="text-xs text-gray-600 space-y-1">
-          <div className="flex justify-between"><span>{derived.teamLabels.team_a}</span><span>{teamA.name} ({teamA.count})</span></div>
-          <div className="flex justify-between"><span>{derived.teamLabels.team_b}</span><span>{teamB.name} ({teamB.count})</span></div>
-          <div className="flex justify-between"><span>Team Separation</span><span className="tabular-nums">{separation}px</span></div>
+          <div className="flex justify-between">
+            <span>{derived.teamLabels.team_a}</span>
+            <span>{teamA.name} ({teamA.count}) · attacking {derived.team.aDefendsLowX ? 'right' : 'left'}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>{derived.teamLabels.team_b}</span>
+            <span>{teamB.name} ({teamB.count}) · attacking {derived.team.aDefendsLowX ? 'left' : 'right'}</span>
+          </div>
+          <div className="flex justify-between"><span>Team Separation</span><span className="tabular-nums">{fmt(derived.team.separationM, 0)} m</span></div>
         </CardContent>
       </Card>
     </div>

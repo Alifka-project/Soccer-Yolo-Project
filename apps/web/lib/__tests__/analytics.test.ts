@@ -348,6 +348,97 @@ console.log('\n[pitch boundary]')
   check('unreliable pitch keeps detections', isPlayerOnPitch([40, 10, 20, 50], pitch), '')
 }
 
+// ------------------------------------------------ direction of play & units
+console.log('\n[team shape]')
+function shapeScenario(teamAOnLeft: boolean) {
+  const map = new Map<string, any>()
+  const add = (id: string, team: string, x: number, y: number) => {
+    map.set(id, {
+      id, class: 'person', team, color: team === 'team_a' ? '#E11D48' : '#2563EB',
+      positions: Array.from({ length: 40 }, (_, f) => ({ frame: f, x, y, w: 40, h: 90, score: 0.9 })),
+    })
+  }
+  // Deep block of 4 on one side, an advanced 3 pushed high on the other.
+  const deepX = teamAOnLeft ? 150 : 1050
+  const highX = teamAOnLeft ? 1050 : 150
+  for (let i = 0; i < 4; i++) add(`a${i}`, 'team_a', deepX + i * 20, 200 + i * 90)
+  for (let i = 0; i < 3; i++) add(`b${i}`, 'team_b', highX + i * 20, 250 + i * 90)
+  return deriveAnalytics(map, { frame_id: 39, resolution: [1280, 720] }, 30)
+}
+{
+  const left = shapeScenario(true)
+  const right = shapeScenario(false)
+  check('team A defending the left is detected', left.team.aDefendsLowX, String(left.team.aDefendsLowX))
+  check('team A defending the right is detected', !right.team.aDefendsLowX, String(right.team.aDefendsLowX))
+  // Mirroring the pitch must mirror the reading, not change it.
+  check(
+    'attacking-third share is direction independent',
+    Math.abs(left.extras.attackingThirdA - right.extras.attackingThirdA) < 0.01,
+    `${left.extras.attackingThirdA} vs ${right.extras.attackingThirdA}`,
+  )
+  check(
+    'formation is direction independent',
+    left.team.teamA.name === right.team.teamA.name,
+    `${left.team.teamA.name} vs ${right.team.teamA.name}`,
+  )
+}
+{
+  const derived = shapeScenario(true)
+  check('team width is reported in metres', derived.team.teamA.widthM > 0 && derived.team.teamA.widthM < 120, derived.team.teamA.widthM.toFixed(1))
+  check('team separation is reported in metres', derived.team.separationM > 0 && derived.team.separationM < 150, derived.team.separationM.toFixed(1))
+  check('compactness is a plausible area in m2', derived.extras.compactnessA >= 0 && derived.extras.compactnessA < 12000, String(derived.extras.compactnessA))
+}
+
+// -------------------------------------------------------- perspective scale
+console.log('\n[perspective]')
+{
+  // Players receding up the frame: near ones tall, far ones short. Two pairs
+  // separated by the same pixel gap must not measure the same in metres.
+  const map = new Map<string, any>()
+  const add = (id: string, x: number, footY: number, h: number) => {
+    map.set(id, {
+      id, class: 'person', team: Number(id) % 2 ? 'team_a' : 'team_b',
+      color: Number(id) % 2 ? '#E11D48' : '#2563EB',
+      positions: Array.from({ length: 30 }, (_, f) => ({ frame: f, x, y: footY - h, w: h / 2.2, h, score: 0.9 })),
+    })
+  }
+  // Foot row 120 -> 40px tall (far); foot row 640 -> 160px tall (near).
+  for (let i = 0; i < 6; i++) add(String(i), 200 + i * 120, 120 + i * 104, 40 + i * 24)
+  const derived = deriveAnalytics(map, { frame_id: 29, resolution: [1280, 720] }, 30)
+
+  const scaleFar = derived.extras.metersPerPixel
+  check('a scale is produced', scaleFar > 0, String(scaleFar))
+  // A team spanning most of the frame must not read as a handful of metres.
+  const spread = Math.max(derived.team.teamA.widthM, derived.team.teamB.widthM)
+  check('team width across the frame is tens of metres', spread > 8, `${spread.toFixed(1)} m`)
+  check('team width stays physically plausible', spread < 120, `${spread.toFixed(1)} m`)
+}
+{
+  // Same pixel distance, different depths: the far pair covers more ground.
+  const near = new Map<string, any>()
+  const far = new Map<string, any>()
+  const build = (map: Map<string, any>, footY: number, h: number) => {
+    for (let i = 0; i < 8; i++) {
+      map.set(String(i), {
+        id: String(i), class: 'person', team: i % 2 ? 'team_a' : 'team_b',
+        color: i % 2 ? '#E11D48' : '#2563EB',
+        positions: Array.from({ length: 30 }, (_, f) => ({
+          frame: f, x: 300 + (i % 2) * 200, y: footY - h + i * 6, w: h / 2.2, h, score: 0.9,
+        })),
+      })
+    }
+  }
+  build(near, 660, 170)
+  build(far, 200, 45)
+  const dNear = deriveAnalytics(near, { frame_id: 29, resolution: [1280, 720] }, 30)
+  const dFar = deriveAnalytics(far, { frame_id: 29, resolution: [1280, 720] }, 30)
+  check(
+    'the same pixel gap measures larger when further away',
+    dFar.team.separationM > dNear.team.separationM,
+    `far ${dFar.team.separationM.toFixed(1)} m vs near ${dNear.team.separationM.toFixed(1)} m`,
+  )
+}
+
 // --------------------------------------------------- win probability model
 console.log('\n[win probability]')
 {
