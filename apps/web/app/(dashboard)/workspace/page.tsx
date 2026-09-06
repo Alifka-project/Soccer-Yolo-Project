@@ -10,13 +10,23 @@ import { Header } from '@/components/header'
 import { useSessionStore } from '@/lib/store'
 
 export default function WorkspacePage() {
-  const { sessionId, createSession } = useSessionStore()
+  const { sessionId, createSession, loadVideoFromUrl } = useSessionStore()
 
   useEffect(() => {
     if (!sessionId) {
       createSession()
     }
   }, [sessionId, createSession])
+
+  // `?video=<url>` opens the workspace straight onto a clip, which makes the
+  // dashboard shareable as a live demo link.
+  useEffect(() => {
+    if (!sessionId) return
+    const url = new URLSearchParams(window.location.search).get('video')
+    if (url) void loadVideoFromUrl(url)
+    // Only the first session gets the deep-linked clip.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
 
   return (
     <div className="flex flex-col h-screen bg-background">

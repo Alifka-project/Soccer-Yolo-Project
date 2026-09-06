@@ -1,0 +1,383 @@
+import { MultiObjectTracker } from '../vision/tracker'
+import { findBallCandidates } from '../vision/ball-finder'
+import { TeamClassifier } from '../vision/team-classifier'
+import type { Detection, TrackedObject } from '../vision/types'
+import { computeWinProbability, deriveAnalytics } from '../analytics'
+import { computePitchMask, isPlayerOnPitch } from '../vision/pitch'
+
+let failures = 0
+function check(name: string, condition: boolean, detail = '') {
+  if (condition) {
+    console.log(`  PASS  ${name}`)
+  } else {
+    failures++
+    console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`)
+  }
+}
+
+// ---------------------------------------------------------------- tracker
+console.log('\n[tracker]')
+{
+  const tracker = new MultiObjectTracker()
+  const ids: number[][] = []
+  for (let frame = 0; frame < 30; frame++) {
+    const dets: Detection[] = [
+      { bbox: [100 + frame * 3, 200, 40, 90], score: 0.9, class: 'person' },
+      { bbox: [400 - frame * 2, 220, 42, 92], score: 0.85, class: 'person' },
+      { bbox: [700, 300 + frame * 4, 38, 88], score: 0.8, class: 'person' },
+      { bbox: [250 + frame * 25, 400, 12, 12], score: 0.4, class: 'ball' },
+    ]
+    const out = tracker.update(dets)
+    ids.push(out.filter((o) => o.class === 'person').map((o) => o.id).sort((a, b) => a - b))
+  }
+  const settled = ids.slice(5)
+  const stable = settled.every((row) => JSON.stringify(row) === JSON.stringify(settled[0]))
+  check('person ids stay stable across 25 frames', stable, JSON.stringify(settled.slice(-1)))
+  check('three person tracks maintained', settled[0].length === 3, `got ${settled[0].length}`)
+
+  const last = tracker.snapshot()
+  const balls = last.filter((o) => o.class === 'ball')
+  check('exactly one ball track survives', balls.length === 1, `got ${balls.length}`)
+  check('fast ball keeps a single id', balls[0]?.id === 4 || balls[0]?.hits > 20, `hits=${balls[0]?.hits}`)
+}
+
+{
+  // Occlusion: a player disappears for 5 frames and comes back nearby.
+  const tracker = new MultiObjectTracker()
+  let idBefore = 0
+  for (let frame = 0; frame < 12; frame++) {
+    const out = tracker.update([{ bbox: [100 + frame * 4, 200, 40, 90], score: 0.9, class: 'person' }])
+    if (frame === 11) idBefore = out[0].id
+  }
+  for (let frame = 0; frame < 5; frame++) tracker.update([])
+  const after = tracker.update([{ bbox: [100 + 17 * 4, 200, 40, 90], score: 0.9, class: 'person' }])
+  check('track survives a 5-frame occlusion with the same id', after[0]?.id === idBefore, `${idBefore} -> ${after[0]?.id}`)
+}
+
+// ------------------------------------------------------------ ball finder
+console.log('\n[ball finder]')
+function makeImage(width: number, height: number) {
+  const data = new Uint8ClampedArray(width * height * 4)
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = 46; data[i + 1] = 125; data[i + 2] = 50; data[i + 3] = 255
+  }
+  return { width, height, data, colorSpace: 'srgb' } as ImageData
+}
+function paintDisc(img: ImageData, cx: number, cy: number, r: number, rgb: [number, number, number]) {
+  for (let y = Math.floor(cy - r); y <= cy + r; y++) {
+    for (let x = Math.floor(cx - r); x <= cx + r; x++) {
+      if (x < 0 || y < 0 || x >= img.width || y >= img.height) continue
+      if ((x - cx) ** 2 + (y - cy) ** 2 > r * r) continue
+      const i = (y * img.width + x) * 4
+      img.data[i] = rgb[0]; img.data[i + 1] = rgb[1]; img.data[i + 2] = rgb[2]
+    }
+  }
+}
+function paintRect(img: ImageData, x0: number, y0: number, w: number, h: number, rgb: [number, number, number]) {
+  for (let y = y0; y < y0 + h; y++) {
+    for (let x = x0; x < x0 + w; x++) {
+      if (x < 0 || y < 0 || x >= img.width || y >= img.height) continue
+      const i = (y * img.width + x) * 4
+      img.data[i] = rgb[0]; img.data[i + 1] = rgb[1]; img.data[i + 2] = rgb[2]
+    }
+  }
+}
+{
+  const img = makeImage(512, 288)
+  paintDisc(img, 300, 150, 4, [245, 245, 245])
+  const found = findBallCandidates(img)
+  check('finds a white ball on grass', found.length >= 1, `found ${found.length}`)
+  if (found.length) {
+    const cx = found[0].bbox[0] + found[0].bbox[2] / 2
+    const cy = found[0].bbox[1] + found[0].bbox[3] / 2
+    check('ball position is accurate', Math.abs(cx - 300) < 3 && Math.abs(cy - 150) < 3, `${cx},${cy}`)
+  }
+}
+{
+  const img = makeImage(512, 288)
+  paintRect(img, 100, 80, 26, 46, [250, 250, 250]) // white jersey torso
+  const found = findBallCandidates(img, { personBoxes: [[95, 70, 36, 100]] })
+  check('white jersey is not reported as a ball', found.length === 0, `found ${found.length}`)
+}
+{
+  const img = makeImage(512, 288)
+  paintRect(img, 40, 200, 300, 3, [255, 255, 255]) // pitch line
+  const found = findBallCandidates(img)
+  check('pitch line is not reported as a ball', found.length === 0, `found ${found.length}`)
+}
+
+// -------------------------------------------------------- team classifier
+console.log('\n[team classifier]')
+{
+  const img = makeImage(512, 288)
+  const boxes: Array<[number, number, number, number]> = []
+  for (let i = 0; i < 5; i++) {
+    const x = 40 + i * 40
+    paintRect(img, x, 100, 20, 20, [200, 30, 40]) // red torso
+    boxes.push([x - 2, 92, 24, 60])
+  }
+  for (let i = 0; i < 5; i++) {
+    const x = 280 + i * 40
+    paintRect(img, x, 100, 20, 20, [30, 60, 200]) // blue torso
+    boxes.push([x - 2, 92, 24, 60])
+  }
+  const classifier = new TeamClassifier()
+  const objects: TrackedObject[] = boxes.map((bbox, index) => ({
+    id: index + 1, bbox, score: 0.9, class: 'person' as const, age: 5, hits: 5,
+    missed: 0, velocity: [0, 0] as [number, number], team: 'unknown' as const, coasted: false,
+  }))
+  let labeled = objects
+  for (let pass = 0; pass < 6; pass++) labeled = classifier.update(img, 1, objects)
+
+  const reds = labeled.slice(0, 5).map((o) => o.team)
+  const blues = labeled.slice(5).map((o) => o.team)
+  const redTeam = reds[0]
+  const blueTeam = blues[0]
+  check('red shirts land on one team', reds.every((t) => t === redTeam) && redTeam !== 'unknown', reds.join(','))
+  check('blue shirts land on the other team', blues.every((t) => t === blueTeam) && blueTeam !== 'unknown', blues.join(','))
+  check('the two teams are different', redTeam !== blueTeam, `${redTeam} vs ${blueTeam}`)
+  const colors = classifier.teamColors
+  check('team colours are recovered', Boolean(colors?.team_a && colors?.team_b), JSON.stringify(colors))
+}
+
+// ------------------------------------------------------------- analytics
+console.log('\n[analytics]')
+function buildTracks(opts: { withBall: boolean }) {
+  const map = new Map<string, any>()
+  const fps = 30
+  // Two teams of 4, static-ish, with team A on the left.
+  for (let i = 0; i < 8; i++) {
+    const team = i < 4 ? 'team_a' : 'team_b'
+    const baseX = team === 'team_a' ? 200 + (i % 4) * 60 : 700 + (i % 4) * 60
+    const positions = []
+    for (let f = 0; f < 90; f++) {
+      positions.push({ frame: f, x: baseX + Math.sin(f / 10 + i) * 12, y: 300 + (i % 4) * 40, w: 40, h: 90, score: 0.9 })
+    }
+    map.set(String(i), { id: String(i), class: 'person', team, color: team === 'team_a' ? '#E11D48' : '#2563EB', positions })
+  }
+  if (opts.withBall) {
+    const positions = []
+    for (let f = 0; f < 90; f++) {
+      // 60 frames (2s) beside team A players, then 30 frames (1s) beside team B.
+      const x = f < 60 ? 210 + (f % 3) * 60 : 710 + (f % 3) * 60
+      positions.push({ frame: f, x, y: 330, w: 14, h: 14, score: 0.5 })
+    }
+    map.set('ball', { id: 'ball', class: 'ball', team: 'ball', color: '#F8FAFC', positions })
+  }
+  return { map, fps }
+}
+{
+  const { map, fps } = buildTracks({ withBall: true })
+  const derived = deriveAnalytics(map, { frame_id: 89, resolution: [1280, 720] }, fps)
+  check('possession source is the tracked ball', derived.possession.source === 'ball', derived.possession.source)
+  check('possession totals ~3s', Math.abs(derived.possession.total_possession_time - 2.97) < 0.4, String(derived.possession.total_possession_time))
+  check(
+    'team A holds roughly two thirds',
+    derived.possession.team_a_percentage > 55 && derived.possession.team_a_percentage < 78,
+    `${derived.possession.team_a_percentage.toFixed(1)}%`,
+  )
+  check('passes were detected', derived.passes.total_passes > 0, String(derived.passes.total_passes))
+  check('events were produced', derived.events.length > 0, String(derived.events.length))
+  check('a turnover is on the timeline', derived.events.some((e) => e.type === 'turnover'), '')
+  check('players are measured', derived.players.length === 8, String(derived.players.length))
+  check('ball is reported as detected', derived.ballDetected, '')
+}
+{
+  const { map, fps } = buildTracks({ withBall: false })
+  const derived = deriveAnalytics(map, { frame_id: 89, resolution: [1280, 720] }, fps)
+  check('falls back to the proximity model', derived.possession.source === 'proximity', derived.possession.source)
+  check('proximity model still yields possession time', derived.possession.total_possession_time > 0.5, String(derived.possession.total_possession_time))
+  check(
+    'proximity percentages add to 100',
+    Math.abs(derived.possession.team_a_percentage + derived.possession.team_b_percentage - 100) < 0.01,
+    `${derived.possession.team_a_percentage} + ${derived.possession.team_b_percentage}`,
+  )
+  check('ball is reported as not detected', !derived.ballDetected, '')
+}
+{
+  const derived = deriveAnalytics(new Map(), null, 30)
+  check('empty input is not ready', !derived.ready, '')
+  check('empty input yields zero possession', derived.possession.total_possession_time === 0, '')
+  check('empty input yields no events', derived.events.length === 0, '')
+}
+
+{
+  // Two kits under uneven lighting: half of each team is in shade. The split
+  // must follow the kit colour, not the brightness.
+  const img = makeImage(512, 288)
+  const boxes: Array<[number, number, number, number]> = []
+  const place = (x: number, rgb: [number, number, number]) => {
+    paintRect(img, x, 100, 20, 20, rgb)
+    boxes.push([x - 2, 92, 24, 60])
+  }
+  for (let i = 0; i < 4; i++) place(30 + i * 34, [200, 30, 40])   // red, lit
+  for (let i = 0; i < 4; i++) place(180 + i * 34, [95, 14, 19])   // red, shaded
+  for (let i = 0; i < 4; i++) place(320 + i * 34, [40, 70, 210])  // blue, lit
+  for (let i = 0; i < 3; i++) place(460 + i * 12, [18, 33, 100])  // blue, shaded
+
+  const classifier = new TeamClassifier()
+  const objects: TrackedObject[] = boxes.map((bbox, index) => ({
+    id: index + 1, bbox, score: 0.9, class: 'person' as const, age: 5, hits: 5,
+    missed: 0, velocity: [0, 0] as [number, number], team: 'unknown' as const, coasted: false,
+  }))
+  let labeled = objects
+  for (let pass = 0; pass < 8; pass++) labeled = classifier.update(img, 1, objects)
+
+  const teams = labeled.map((o) => o.team)
+  const reds = teams.slice(0, 8)
+  const blues = teams.slice(8)
+  const assigned = teams.filter((t) => t === 'team_a' || t === 'team_b')
+  check('most players get a team under uneven lighting', assigned.length >= 11, `${assigned.length}/15`)
+  check('reds share one team across lighting', new Set(reds.filter((t) => t !== 'unknown')).size === 1, reds.join(','))
+  check('blues share the other team', new Set(blues.filter((t) => t !== 'unknown')).size === 1, blues.join(','))
+  check('the split is not lopsided', reds[0] !== blues[0], `${reds[0]} vs ${blues[0]}`)
+}
+
+// ------------------------------------------------ unified ownership model
+console.log('\n[ownership model]')
+{
+  const { map, fps } = buildTracks({ withBall: true })
+  const derived = deriveAnalytics(map, { frame_id: 89, resolution: [1280, 720] }, fps)
+  check('ball coverage is reported', derived.ballCoverage > 0.9, derived.ballCoverage.toFixed(2))
+  check('source follows coverage', derived.possession.source === 'ball', derived.possession.source)
+}
+{
+  // Ball visible for only the first third: the model should fall back for the
+  // rest but still report the partial coverage honestly.
+  const { map, fps } = buildTracks({ withBall: true })
+  const ball = map.get('ball')
+  ball.positions = ball.positions.filter((p: any) => p.frame < 30)
+  const derived = deriveAnalytics(map, { frame_id: 89, resolution: [1280, 720] }, fps)
+  check(
+    'partial ball coverage sits between 0 and 1',
+    derived.ballCoverage > 0.05 && derived.ballCoverage < 0.8,
+    derived.ballCoverage.toFixed(2),
+  )
+  check('possession still accumulates through the gap', derived.possession.total_possession_time > 1, String(derived.possession.total_possession_time))
+}
+{
+  // A long pass: the holder ends up far from the ball and must give it up.
+  const map = new Map<string, any>()
+  const positions = (x: number) => Array.from({ length: 60 }, (_, f) => ({ frame: f, x, y: 300, w: 40, h: 90, score: 0.9 }))
+  map.set('1', { id: '1', class: 'person', team: 'team_a', color: '#E11D48', positions: positions(200) })
+  map.set('2', { id: '2', class: 'person', team: 'team_a', color: '#E11D48', positions: positions(900) })
+  map.set('3', { id: '3', class: 'person', team: 'team_b', color: '#2563EB', positions: positions(1150) })
+  map.set('ball', {
+    id: 'ball', class: 'ball', team: 'ball', color: '#F8FAFC',
+    positions: Array.from({ length: 60 }, (_, f) => ({ frame: f, x: f < 30 ? 215 : 915, y: 330, w: 14, h: 14, score: 0.5 })),
+  })
+  const derived = deriveAnalytics(map, { frame_id: 59, resolution: [1280, 720] }, 30)
+  check('possession transfers across a long pass', derived.passes.total_passes >= 1, String(derived.passes.total_passes))
+  check('the pass is credited to the right team', derived.passes.team_a_passes >= 1, String(derived.passes.team_a_passes))
+}
+
+// ------------------------------------------------------- pass success rate
+console.log('\n[pass outcomes]')
+function passScenario(interceptDistance: number) {
+  const map = new Map<string, any>()
+  const still = (x: number) => Array.from({ length: 90 }, (_, f) => ({ frame: f, x, y: 300, w: 40, h: 90, score: 0.9 }))
+  map.set('1', { id: '1', class: 'person', team: 'team_a', color: '#E11D48', positions: still(200) })
+  map.set('2', { id: '2', class: 'person', team: 'team_a', color: '#E11D48', positions: still(500) })
+  map.set('3', { id: '3', class: 'person', team: 'team_b', color: '#2563EB', positions: still(500 + interceptDistance) })
+  map.set('ball', {
+    id: 'ball', class: 'ball', team: 'ball', color: '#F8FAFC',
+    positions: Array.from({ length: 90 }, (_, f) => ({
+      // A completed pass 1 -> 2, then the ball is lost to team B.
+      frame: f, x: f < 30 ? 215 : f < 60 ? 515 : 515 + interceptDistance,
+      y: 330, w: 14, h: 14, score: 0.5,
+    })),
+  })
+  return deriveAnalytics(map, { frame_id: 89, resolution: [1280, 720] }, 30)
+}
+{
+  const derived = passScenario(300) // ball travels: an interception
+  const p = derived.passes
+  check('attempts include the lost ball', p.total_passes >= 2, String(p.total_passes))
+  check('completions are fewer than attempts', p.successful_passes < p.total_passes, `${p.successful_passes}/${p.total_passes}`)
+  check(
+    'success rate is a real percentage, not 0 or 100',
+    p.pass_success_rate > 0 && p.pass_success_rate < 100,
+    `${p.pass_success_rate.toFixed(1)}%`,
+  )
+  check('rate equals completed over attempted', Math.abs(p.pass_success_rate - (p.successful_passes / p.total_passes) * 100) < 0.01, '')
+  check('an unsuccessful pass is recorded', p.recent_passes.some((x) => !x.successful), '')
+  check('an interception event is on the timeline', derived.events.some((e) => /Interception/.test(e.label)), '')
+}
+{
+  const derived = passScenario(45) // ball barely moves: a tackle, not a pass
+  const p = derived.passes
+  check('a close-range loss is not counted as a pass attempt', p.recent_passes.every((x) => x.successful), `${p.successful_passes}/${p.total_passes}`)
+  check('it still registers as a turnover', derived.events.some((e) => e.type === 'turnover'), '')
+}
+
+// ------------------------------------------------------------ pitch bounds
+console.log('\n[pitch boundary]')
+{
+  // Grass across the lower half, stands and boards above it.
+  const w = 320, h = 200
+  const data = new Uint8ClampedArray(w * h * 4)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4
+      const onPitch = y >= h / 2
+      data[i] = onPitch ? 46 : 120
+      data[i + 1] = onPitch ? 125 : 110
+      data[i + 2] = onPitch ? 50 : 115
+      data[i + 3] = 255
+    }
+  }
+  const pitch = computePitchMask({ width: w, height: h, data, colorSpace: 'srgb' } as ImageData)
+  check('pitch is detected as reliable', pitch.reliable, `coverage ${pitch.coverage.toFixed(2)}`)
+  check('boundary sits near the halfway line', Math.abs(pitch.horizon[160] - h / 2) < 14, String(pitch.horizon[160]))
+
+  // A player standing on the grass.
+  check('a player on the pitch is kept', isPlayerOnPitch([150, 120, 20, 60], pitch), '')
+  // A camera operator behind the boards: feet well above the boundary.
+  check('a camera operator behind the boards is rejected', !isPlayerOnPitch([150, 20, 20, 55], pitch), '')
+  // Crowd high in the stands.
+  check('the crowd is rejected', !isPlayerOnPitch([40, 5, 16, 40], pitch), '')
+}
+{
+  // A tight close-up with almost no grass: filtering must switch itself off
+  // rather than discard every detection.
+  const w = 160, h = 120
+  const data = new Uint8ClampedArray(w * h * 4)
+  for (let i = 0; i < data.length; i += 4) { data[i] = 130; data[i+1] = 120; data[i+2] = 125; data[i+3] = 255 }
+  const pitch = computePitchMask({ width: w, height: h, data, colorSpace: 'srgb' } as ImageData)
+  check('a close-up is marked unreliable', !pitch.reliable, `coverage ${pitch.coverage.toFixed(2)}`)
+  check('unreliable pitch keeps detections', isPlayerOnPitch([40, 10, 20, 50], pitch), '')
+}
+
+// --------------------------------------------------- win probability model
+console.log('\n[win probability]')
+{
+  const dominant = computeWinProbability({
+    possessionA: 80, possessionB: 20, possessionTime: 12,
+    attackingA: 70, attackingB: 10, teamAPasses: 15, teamBPasses: 3,
+    ballX: 1100, fieldWidth: 1280, hasPeople: true,
+  })
+  check('dominant team is favoured', dominant.team_a > 70, `${dominant.team_a}%`)
+  check('probabilities sum to 100', Math.abs(dominant.team_a + dominant.team_b - 100) < 0.2, `${dominant.team_a}+${dominant.team_b}`)
+  check('factors are returned', dominant.factors.length >= 3, String(dominant.factors.length))
+  check('factors are ranked by influence', dominant.factors.every((f, i, a) => i === 0 || Math.abs(a[i - 1].contribution) >= Math.abs(f.contribution)), '')
+  check('every factor carries an explanation', dominant.factors.every((f) => f.detail.length > 0), '')
+
+  const mirrored = computeWinProbability({
+    possessionA: 20, possessionB: 80, possessionTime: 12,
+    attackingA: 10, attackingB: 70, teamAPasses: 3, teamBPasses: 15,
+    ballX: 180, fieldWidth: 1280, hasPeople: true,
+  })
+  check('model is symmetric', Math.abs(mirrored.team_b - dominant.team_a) < 0.2, `${mirrored.team_b} vs ${dominant.team_a}`)
+
+  const neutral = computeWinProbability({ hasPeople: false, possessionTime: 0 })
+  check('pre-match is 50/50', neutral.team_a === 50 && neutral.team_b === 50, `${neutral.team_a}/${neutral.team_b}`)
+
+  const momentum = computeWinProbability({
+    possessionA: 50, possessionB: 50, possessionTime: 10,
+    recentPossessionA: 90, hasPeople: true,
+  })
+  check('momentum shifts an even game', momentum.team_a > 52, `${momentum.team_a}%`)
+}
+
+console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`)
+process.exit(failures === 0 ? 0 : 1)

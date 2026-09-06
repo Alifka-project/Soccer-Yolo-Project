@@ -4,131 +4,264 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
-import { Play, Pause, Zap, Square } from 'lucide-react'
+import { Play, Pause, Zap, Square, Cpu, ChevronDown, ChevronRight } from 'lucide-react'
 import { useSessionStore } from '@/lib/store'
+import { hasWorkerConfig } from '@/lib/config'
+import type { DetectorQuality } from '@/lib/vision/detector'
+
+const QUALITY_OPTIONS: Array<{ value: DetectorQuality; label: string; hint: string }> = [
+  { value: 'fast', label: 'Fast', hint: 'Single pass, light model — highest detection rate' },
+  { value: 'balanced', label: 'Balanced', hint: '2 tiles, light model — default' },
+  { value: 'accurate', label: 'Accurate', hint: '2 tiles, full model — best on distant players, slowest' },
+]
 
 export function ControlPanel() {
   const [mode, setMode] = useState('preview')
-  const { 
-    startTracking, 
-    startRealtimeTracking, 
+  const [showWorker, setShowWorker] = useState(false)
+  const {
+    startTracking,
+    startRealtimeTracking,
     stopRealtimeTracking,
-    processingStatus, 
-    progress, 
+    processingStatus,
+    progress,
     error,
-    isRealtimeMode,
     videoData,
+    videoReady,
+    isUploading,
     sessionId,
     backendMode,
     workerInfo,
+    currentFrame,
+    totalFrames,
+    liveEnabled,
+    liveStatus,
+    liveQuality,
+    liveFrameCount,
+    workerVideoReady,
+    setLiveEnabled,
+    setLiveQuality,
   } = useSessionStore()
-
-  const handleStart = async () => {
-    await startTracking(mode)
-  }
-
-  const handleRealtimeStart = async () => {
-    await startRealtimeTracking()
-  }
-
-  const handleRealtimeStop = () => {
-    stopRealtimeTracking()
-  }
 
   const isProcessing = processingStatus === 'processing'
   const isRealtime = processingStatus === 'realtime'
-  const hasVideo = !!videoData
+  const hasVideo = !!videoData && (backendMode !== 'worker' || videoReady)
   const hasSession = !!sessionId
+  const workerConfigured = hasWorkerConfig()
 
   return (
     <div className="space-y-4">
-      <div className={`text-xs rounded p-2 ${backendMode === 'worker' ? 'bg-green-50 text-green-800' : 'bg-amber-50 text-amber-800'}`}>
-        {backendMode === 'worker'
-          ? `YOLO26 worker connected${workerInfo?.device ? ` (${workerInfo.device})` : ''}`
-          : 'Demo mode: Vercel cannot run YOLO. Start the local worker for real tracking.'}
-      </div>
-
-      <div>
-        <Label className="text-base font-medium">Tracking Mode</Label>
-        <RadioGroup value={mode} onValueChange={setMode} className="mt-2">
-          <div className="flex items-center space-x-2">
-            <RadioGroupItem value="preview" id="preview" />
-            <Label htmlFor="preview" className="font-normal">
-              Preview (YOLO26s, faster)
-            </Label>
+      <div className="rounded-lg border bg-white p-3 space-y-3">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Cpu className="h-4 w-4 text-emerald-600" />
+              Live analysis
+            </div>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              Runs in this browser while the video plays. No upload, no job to start.
+            </p>
           </div>
-          <div className="flex items-center space-x-2">
-            <RadioGroupItem value="publish" id="publish" />
-            <Label htmlFor="publish" className="font-normal">
-              Publish (YOLO26m, higher quality)
-            </Label>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={liveEnabled}
+            onClick={() => setLiveEnabled(!liveEnabled)}
+            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${liveEnabled ? 'bg-emerald-500' : 'bg-gray-300'}`}
+          >
+            <span
+              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${liveEnabled ? 'translate-x-4' : 'translate-x-0.5'}`}
+            />
+          </button>
+        </div>
+
+        {liveEnabled && (
+          <>
+            <div className="grid grid-cols-3 gap-1">
+              {QUALITY_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  title={option.hint}
+                  onClick={() => setLiveQuality(option.value)}
+                  className={`rounded border px-2 py-1.5 text-[11px] font-medium transition-colors ${
+                    liveQuality === option.value
+                      ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
+                      : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="rounded bg-gray-50 p-2 text-[11px] text-gray-600 space-y-1">
+              <StatusLine
+                label="Model"
+                value={
+                  liveStatus?.state === 'ready'
+                    ? `ready · ${liveStatus.backend}`
+                    : liveStatus?.state === 'loading'
+                      ? 'downloading…'
+                      : liveStatus?.state === 'error'
+                        ? 'failed'
+                        : 'idle'
+                }
+                tone={liveStatus?.state === 'error' ? 'bad' : liveStatus?.state === 'ready' ? 'good' : 'muted'}
+              />
+              <StatusLine
+                label="Analysis"
+                value={
+                  liveStatus?.running
+                    ? `${liveStatus.analysisFps.toFixed(1)} fps · ${liveStatus.inferenceMs}ms`
+                    : videoData
+                      ? 'paused — press play'
+                      : 'waiting for video'
+                }
+                tone={liveStatus?.running ? 'good' : 'muted'}
+              />
+              <StatusLine
+                label="Detected"
+                value={`${liveStatus?.detectedPlayers ?? 0} players · ${liveStatus?.ballDetected ? 'ball ✓' : 'no ball'}`}
+                tone={liveStatus?.detectedPlayers ? 'good' : 'muted'}
+              />
+              <StatusLine label="Frames analysed" value={String(liveFrameCount)} tone="muted" />
+            </div>
+
+            {liveStatus?.state === 'error' && (
+              <p className="rounded bg-red-50 p-2 text-[11px] text-red-700">
+                {liveStatus.message || 'The detector could not start in this browser.'}
+              </p>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="rounded-lg border bg-white">
+        <button
+          type="button"
+          onClick={() => setShowWorker((value) => !value)}
+          className="flex w-full items-center justify-between p-3 text-sm font-semibold"
+        >
+          <span className="flex items-center gap-2">
+            {showWorker ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            High-accuracy worker
+          </span>
+          <span
+            className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+              backendMode === 'worker' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+            }`}
+          >
+            {backendMode === 'worker' ? 'connected' : workerConfigured ? 'offline' : 'not configured'}
+          </span>
+        </button>
+
+        {showWorker && (
+          <div className="space-y-3 border-t p-3">
+            <p className="text-[11px] text-muted-foreground">
+              Optional YOLO26 backend for a full-quality pass over the whole clip.
+              {backendMode === 'worker' && workerInfo?.device ? ` Running on ${workerInfo.device}.` : ''}
+              {' '}The clip is sent to the worker only when you start a job here — live
+              analysis does not need it.
+              {workerVideoReady ? ' Clip already uploaded.' : ''}
+            </p>
+
+            <div>
+              <Label className="text-xs font-medium">Tracking mode</Label>
+              <RadioGroup value={mode} onValueChange={setMode} className="mt-1.5">
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="preview" id="preview" />
+                  <Label htmlFor="preview" className="text-xs font-normal">
+                    Preview{workerInfo?.model_preview ? ` (${workerInfo.model_preview})` : ''}
+                  </Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="publish" id="publish" />
+                  <Label htmlFor="publish" className="text-xs font-normal">
+                    Publish{workerInfo?.model_publish ? ` (${workerInfo.model_publish})` : ''}
+                  </Label>
+                </div>
+              </RadioGroup>
+            </div>
+
+            <Button
+              className="w-full"
+              size="sm"
+              onClick={() => startTracking(mode)}
+              disabled={isProcessing || isRealtime || !hasVideo || !hasSession || isUploading || backendMode !== 'worker'}
+            >
+              {isProcessing ? (
+                <>
+                  <Pause className="mr-2 h-4 w-4" />
+                  Processing {progress}%{totalFrames > 0 ? ` · ${currentFrame}/${totalFrames}` : ''}
+                </>
+              ) : isUploading ? (
+                'Sending clip to worker…'
+              ) : (
+                <>
+                  <Play className="mr-2 h-4 w-4" />
+                  Run batch tracking
+                </>
+              )}
+            </Button>
+
+            <Button
+              className="w-full"
+              size="sm"
+              variant={isRealtime ? 'destructive' : 'outline'}
+              onClick={isRealtime ? stopRealtimeTracking : startRealtimeTracking}
+              disabled={isProcessing || !hasVideo || !hasSession || isUploading || backendMode !== 'worker'}
+            >
+              {isRealtime ? (
+                <>
+                  <Square className="mr-2 h-4 w-4" />
+                  Stop worker stream
+                </>
+              ) : (
+                <>
+                  <Zap className="mr-2 h-4 w-4" />
+                  Stream from worker
+                </>
+              )}
+            </Button>
+
+            {backendMode !== 'worker' && (
+              <p className="text-[11px] text-muted-foreground">
+                {workerConfigured
+                  ? 'Worker unreachable. Live browser analysis is handling the video instead.'
+                  : 'Set NEXT_PUBLIC_WORKER_HTTP_BASE to enable. Not required — live analysis already works.'}
+              </p>
+            )}
           </div>
-        </RadioGroup>
+        )}
       </div>
 
-      <div className="space-y-2">
-        <Button
-          className="w-full"
-          onClick={handleStart}
-          disabled={isProcessing || isRealtime || !hasVideo || !hasSession}
-        >
-          {isProcessing ? (
-            <>
-              <Pause className="mr-2 h-4 w-4" />
-              Processing... {progress}%
-            </>
-          ) : (
-            <>
-              <Play className="mr-2 h-4 w-4" />
-              Start Batch Tracking
-            </>
-          )}
-        </Button>
-
-        <Button
-          className="w-full"
-          variant={isRealtime ? "destructive" : "default"}
-          onClick={isRealtime ? handleRealtimeStop : handleRealtimeStart}
-          disabled={isProcessing || !hasVideo || !hasSession}
-        >
-          {isRealtime ? (
-            <>
-              <Square className="mr-2 h-4 w-4" />
-              Stop Real-time Tracking
-            </>
-          ) : (
-            <>
-              <Zap className="mr-2 h-4 w-4" />
-              Start Real-time Tracking
-            </>
-          )}
-        </Button>
-      </div>
-      
       {error && (
-        <div className="text-red-500 text-sm p-2 bg-red-50 rounded">
-          Error: {error}
-        </div>
+        <div className="rounded bg-red-50 p-2 text-sm text-red-600">{error}</div>
       )}
-      
+
       {processingStatus === 'completed' && (
-        <div className="text-green-500 text-sm p-2 bg-green-50 rounded">
-          Processing completed successfully!
+        <div className="rounded bg-green-50 p-2 text-sm text-green-600">
+          Batch tracking completed.
         </div>
       )}
+    </div>
+  )
+}
 
-      {isRealtime && (
-        <div className="text-blue-500 text-sm p-2 bg-blue-50 rounded">
-          Real-time tracking active
-        </div>
-      )}
-
-      <div className="text-xs text-gray-500 space-y-1">
-        <div>Session: {hasSession ? 'yes' : 'no'}</div>
-        <div>Video: {hasVideo ? 'yes' : 'no'}</div>
-        <div>Status: {processingStatus}</div>
-        {sessionId && <div>ID: {sessionId.slice(0, 8)}...</div>}
-      </div>
+function StatusLine({
+  label,
+  value,
+  tone,
+}: {
+  label: string
+  value: string
+  tone: 'good' | 'bad' | 'muted'
+}) {
+  const color = tone === 'good' ? 'text-emerald-700' : tone === 'bad' ? 'text-red-600' : 'text-gray-500'
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-gray-500">{label}</span>
+      <span className={`font-medium tabular-nums ${color}`}>{value}</span>
     </div>
   )
 }

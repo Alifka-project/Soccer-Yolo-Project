@@ -11,6 +11,7 @@ from tracking.model_config import (
     use_half_precision,
     weights_path,
 )
+from tracking.ball_finder import BallCoaster, find_ball_blobs, pick_ball
 
 class SoccerBallDetector:
     """Specialized soccer ball detector with enhanced accuracy"""
@@ -42,15 +43,11 @@ class SoccerBallDetector:
         start_time = time.time()
         
         try:
-            # Preprocess frame for better ball detection
-            processed_frame = self._preprocess_for_ball(frame)
-            
-            # Run detection
             results = self.model(
-                processed_frame,
-                conf=self.conf_thresh,
+                frame,
+                conf=0.08,
                 verbose=False,
-                imgsz=640,
+                imgsz=max(640, 960 if min(frame.shape[:2]) >= 400 else 640),
                 half=self.half,
                 device=self.device,
                 classes=[self.ball_class_id],
@@ -58,9 +55,6 @@ class SoccerBallDetector:
             
             # Process results for ball detection
             ball_detections = self._process_ball_results(results, frame.shape)
-            
-            # Apply temporal filtering
-            ball_detections = self._apply_temporal_filtering(ball_detections, frame_id)
             
             # Update performance metrics
             detection_time = time.time() - start_time
@@ -118,8 +112,7 @@ class SoccerBallDetector:
                         ball_height = y2 - y1
                         ball_size = max(ball_width, ball_height)
                         
-                        # Filter by ball size
-                        if self.min_ball_size <= ball_size <= self.max_ball_size:
+                        if 3 <= ball_size <= 80:
                             # Convert to [x, y, w, h] format
                             bbox = [x1, y1, ball_width, ball_height]
                             
@@ -219,30 +212,79 @@ class EnhancedSoccerDetector:
         self.model = YOLO(weights_path(self.model_name))
         
         # Specialized detectors share the same weights to avoid loading YOLO twice
-        self.ball_detector = SoccerBallDetector(self.model_name, conf_thresh + 0.1, model=self.model)
+        self.ball_detector = SoccerBallDetector(self.model_name, 0.08, model=self.model)
+        self.ball_state = BallCoaster()
         
         # Class-specific parameters
         self.class_thresholds = {
-            PERSON_CLASS_ID: 0.25,   # person - lower threshold for better recall
-            BALL_CLASS_ID: 0.4    # ball - higher threshold for precision
+            PERSON_CLASS_ID: 0.22,
+            BALL_CLASS_ID: 0.08,
         }
         
         # Performance tracking
         self.frame_count = 0
         self.detection_times = []
         
+    def detect_ball_only(self, frame: np.ndarray) -> List[Dict]:
+        """Cheap ball update for skipped player-inference frames."""
+        blobs = find_ball_blobs(frame, self.ball_state.center)
+        chosen = pick_ball([], blobs, self.ball_state.center)
+        if chosen:
+            self.ball_state.observe(chosen["bbox"], chosen["score"])
+            return [chosen]
+        coasted = self.ball_state.coast()
+        return [coasted] if coasted else []
+
     def detect(self, frame: np.ndarray, frame_id: int = None) -> List[Dict]:
-        """Detect players and ball with enhanced accuracy"""
+        """Detect players and ball with a single YOLO pass plus pitch fallback."""
         start_time = time.time()
         
         try:
-            # Detect players using standard YOLO
-            player_detections = self._detect_players(frame)
-            
-            # Detect ball using specialized detector
-            ball_detections = self.ball_detector.detect_ball(frame, frame_id)
-            
-            # Combine detections
+            results = self.model(
+                frame,
+                conf=0.08,
+                verbose=False,
+                imgsz=640,
+                half=self.half,
+                device=self.device,
+                classes=[PERSON_CLASS_ID, BALL_CLASS_ID],
+                max_det=60,
+            )
+            player_detections = []
+            yolo_balls = []
+            for r in results:
+                boxes = r.boxes
+                if boxes is None:
+                    continue
+                for box in boxes:
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    conf = float(box.conf[0].cpu().numpy())
+                    cls = int(box.cls[0].cpu().numpy())
+                    bbox = [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+                    if cls == PERSON_CLASS_ID and conf >= self.class_thresholds[PERSON_CLASS_ID]:
+                        player_detections.append({
+                            'bbox': bbox,
+                            'score': conf,
+                            'class': 'person',
+                            'class_id': PERSON_CLASS_ID,
+                        })
+                    elif cls == BALL_CLASS_ID and conf >= self.class_thresholds[BALL_CLASS_ID]:
+                        yolo_balls.append({
+                            'bbox': bbox,
+                            'score': conf,
+                            'class': 'ball',
+                            'class_id': BALL_CLASS_ID,
+                            'center': (bbox[0] + bbox[2] / 2.0, bbox[1] + bbox[3] / 2.0),
+                            'source': 'yolo',
+                        })
+            blobs = find_ball_blobs(frame, self.ball_state.center)
+            chosen = pick_ball(yolo_balls, blobs, self.ball_state.center)
+            if chosen:
+                self.ball_state.observe(chosen["bbox"], chosen["score"])
+                ball_detections = [chosen]
+            else:
+                coasted = self.ball_state.coast()
+                ball_detections = [coasted] if coasted else []
             all_detections = player_detections + ball_detections
             
             # Update performance metrics
@@ -260,65 +302,39 @@ class EnhancedSoccerDetector:
             return []
     
     def _detect_players(self, frame: np.ndarray) -> List[Dict]:
-        """Detect players using standard YOLO"""
+        """Detect players with YOLO letterboxing (no aspect-ratio warp)."""
         try:
-            # Resize frame for faster processing
-            height, width = frame.shape[:2]
-            target_size = 640
-            
-            if width != target_size or height != target_size:
-                frame_resized = cv2.resize(frame, (target_size, target_size))
-                scale_x = width / target_size
-                scale_y = height / target_size
-            else:
-                frame_resized = frame
-                scale_x = scale_y = 1.0
-            
-            # Run detection
             results = self.model(
-                frame_resized,
+                frame,
                 conf=self.conf_thresh,
                 verbose=False,
-                imgsz=target_size,
+                imgsz=640,
                 half=self.half,
                 device=self.device,
                 classes=[PERSON_CLASS_ID],
+                max_det=40,
             )
-            
-            # Process results for players only
+
             player_detections = []
             for r in results:
                 boxes = r.boxes
-                if boxes is not None:
-                    for box in boxes:
-                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                        conf = box.conf[0].cpu().numpy()
-                        cls = int(box.cls[0].cpu().numpy())
-                        
-                        # Only process person detections
-                        if cls == PERSON_CLASS_ID:
-                            # Apply class-specific threshold
-                            if conf < self.class_thresholds[PERSON_CLASS_ID]:
-                                continue
-                            
-                            # Scale back to original frame size
-                            x1 *= scale_x
-                            y1 *= scale_y
-                            x2 *= scale_x
-                            y2 *= scale_y
-                            
-                            # Convert to [x, y, w, h] format
-                            bbox = [x1, y1, x2 - x1, y2 - y1]
-                            
-                            player_detections.append({
-                                'bbox': bbox,
-                                'score': float(conf),
-                                'class': 'person',
-                                'class_id': 0
-                            })
-            
+                if boxes is None:
+                    continue
+                for box in boxes:
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    conf = float(box.conf[0].cpu().numpy())
+                    cls = int(box.cls[0].cpu().numpy())
+                    if cls != PERSON_CLASS_ID:
+                        continue
+                    if conf < self.class_thresholds[PERSON_CLASS_ID]:
+                        continue
+                    player_detections.append({
+                        'bbox': [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
+                        'score': conf,
+                        'class': 'person',
+                        'class_id': 0,
+                    })
             return player_detections
-            
         except Exception as e:
             print(f"Player detection error: {e}")
             return []

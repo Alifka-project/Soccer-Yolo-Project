@@ -1,39 +1,27 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useSessionStore } from '@/lib/store'
+import { useDerivedAnalytics } from '@/lib/use-derived-analytics'
+import { fmt, rgbaFromHex } from '@/lib/analytics'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Progress } from '@/components/ui/progress'
+import { TeamLegend, TeamSwatchCard } from '@/components/team-legend'
+import { AiInsights } from '@/components/ai-insights'
+
+function possessionNote(source: string, coverage: number) {
+  const pct = Math.round(coverage * 100)
+  if (source === 'worker') return 'Reported by the YOLO26 worker'
+  if (source === 'none') return 'Not enough tracking data yet'
+  if (pct >= 95) return 'Ball tracked throughout · possession follows the ball'
+  if (pct > 0) {
+    return `Ball tracked in ${pct}% of sampled frames · play location fills the gaps`
+  }
+  return 'Ball not detected · possession estimated from where play is concentrated'
+}
 
 export function SoccerAnalytics() {
-  const { analyticsData, isRealtimeMode, processingStatus, tracks } = useSessionStore()
-  const [localAnalytics, setLocalAnalytics] = useState(analyticsData)
+  const { derived, isRealtimeMode, processingStatus, analyticsData, liveStatus } = useDerivedAnalytics()
 
-  useEffect(() => {
-    setLocalAnalytics(analyticsData)
-  }, [analyticsData])
-
-  useEffect(() => {
-    const handleAnalyticsUpdate = (event: CustomEvent) => {
-      setLocalAnalytics(event.detail)
-    }
-
-    window.addEventListener('analyticsUpdate', handleAnalyticsUpdate as EventListener)
-    
-    return () => {
-      window.removeEventListener('analyticsUpdate', handleAnalyticsUpdate as EventListener)
-    }
-  }, [])
-
-  // Use local analytics if available, otherwise use store data
-  const currentAnalytics = localAnalytics || analyticsData
-
-  // Show analytics if we have real-time data OR completed tracking data
-  const hasAnalyticsData = currentAnalytics && (isRealtimeMode || processingStatus === 'completed')
-  const hasTrackingData = tracks.size > 0
-
-  if (!hasAnalyticsData && !hasTrackingData) {
+  if (!derived.ready) {
     return (
       <Card className="w-full">
         <CardHeader>
@@ -44,122 +32,89 @@ export function SoccerAnalytics() {
         </CardHeader>
         <CardContent>
           <p className="text-gray-500 text-sm">
-            {processingStatus === 'processing' 
-              ? 'Processing video...' 
-              : isRealtimeMode 
-                ? 'Waiting for analytics data...' 
-                : 'Start tracking to see analytics'}
+            {processingStatus === 'processing'
+              ? 'Processing video…'
+              : liveStatus?.state === 'loading'
+                ? 'Loading the vision model — analytics start the moment the video plays.'
+                : liveStatus?.state === 'error'
+                  ? `Live detector unavailable: ${liveStatus.message}`
+                  : 'Upload a video and press play. Analytics stream while it runs — no job to start.'}
           </p>
         </CardContent>
       </Card>
     )
   }
 
-  // Create fallback analytics from tracking data if needed
-  let possession_stats, pass_stats, frame_id, tracking_data
-  
-  if (currentAnalytics) {
-    possession_stats = currentAnalytics.possession_stats
-    pass_stats = currentAnalytics.pass_stats
-    frame_id = currentAnalytics.frame_id
-    tracking_data = currentAnalytics.tracking_data
-  } else if (hasTrackingData) {
-    // Create basic analytics from tracking data
-    const totalTracks = tracks.size
-    const teamASize = Math.floor(totalTracks / 2)
-    const teamBSize = totalTracks - teamASize
-    
-    possession_stats = {
-      team_a_possession: 50,
-      team_b_possession: 50,
-      team_a_percentage: 50,
-      team_b_percentage: 50,
-      total_possession_time: 0,
-      possession_events: 0,
-      passes: 0,
-      current_possession: null
-    }
-    
-    pass_stats = {
-      total_passes: Math.max(0, totalTracks * 2),
-      successful_passes: Math.max(0, Math.floor(totalTracks * 1.6)),
-      pass_success_rate: 80,
-      team_a_passes: teamASize * 2,
-      team_b_passes: teamBSize * 2,
-      recent_passes: []
-    }
-    
-    frame_id = 0
-    tracking_data = Array.from(tracks.entries()).map(([id, track]) => ({
-      track_id: id,
-      bbox: [100, 100, 50, 50],
-      class: 'person',
-      confidence: 0.8,
-      center: [125, 125]
-    }))
-  }
+  const possession = derived.possession
+  const passes = derived.passes
+  const colorA = derived.teamColors.team_a
+  const colorB = derived.teamColors.team_b
+  const collecting = possession.total_possession_time < 0.35
+  const isLive = processingStatus === 'live'
 
   return (
     <div className="space-y-4 max-h-full overflow-y-auto">
-      {/* Possession Stats */}
+      <TeamLegend colors={derived.teamColors} labels={derived.teamLabels} />
+
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
             <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
             Ball Possession
+            {isLive && (
+              <span className="ml-auto flex items-center gap-1 text-[10px] font-medium text-emerald-600">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                LIVE
+              </span>
+            )}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="text-center p-3 bg-blue-50 rounded-lg">
-              <div className="text-2xl font-bold text-blue-600 mb-1">
-                {possession_stats?.team_a_percentage.toFixed(1) || '0.0'}%
+          {collecting ? (
+            <p className="text-sm text-gray-500">
+              Collecting possession samples… percentages appear after about 0.4s of tracked control.
+            </p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-4">
+                <TeamSwatchCard
+                  color={colorA}
+                  label={derived.teamLabels.team_a}
+                  value={`${fmt(possession.team_a_percentage)}%`}
+                  sublabel={`${fmt(possession.team_a_possession)}s`}
+                />
+                <TeamSwatchCard
+                  color={colorB}
+                  label={derived.teamLabels.team_b}
+                  value={`${fmt(possession.team_b_percentage)}%`}
+                  sublabel={`${fmt(possession.team_b_possession)}s`}
+                />
               </div>
-              <div className="text-xs font-medium text-gray-700">Team A</div>
-              <div className="text-xs text-gray-500">
-                {possession_stats?.team_a_possession.toFixed(1) || '0.0'}s
+              <div className="h-3 rounded-full overflow-hidden flex bg-gray-100">
+                <div className="h-full transition-all duration-300" style={{ width: `${possession.team_a_percentage}%`, backgroundColor: colorA }} />
+                <div className="h-full transition-all duration-300" style={{ width: `${possession.team_b_percentage}%`, backgroundColor: colorB }} />
               </div>
-            </div>
-            <div className="text-center p-3 bg-cyan-50 rounded-lg">
-              <div className="text-2xl font-bold text-cyan-600 mb-1">
-                {possession_stats?.team_b_percentage.toFixed(1) || '0.0'}%
-              </div>
-              <div className="text-xs font-medium text-gray-700">Team B</div>
-              <div className="text-xs text-gray-500">
-                {possession_stats?.team_b_possession.toFixed(1) || '0.0'}s
-              </div>
-            </div>
-          </div>
-          
-          <div className="space-y-3">
-            <div className="flex justify-between text-sm font-medium">
-              <span>Team A</span>
-                    <span>{possession_stats?.team_a_percentage.toFixed(1) || '0.0'}%</span>
-            </div>
-            <Progress 
-              value={possession_stats?.team_a_percentage || 0} 
-              className="h-3"
-            />
-          </div>
+            </>
+          )}
 
-          {possession_stats?.current_possession && (
-            <div className="mt-4 p-3 bg-green-50 rounded-lg border border-green-200">
+          <p className="text-[11px] text-gray-500">
+            {possessionNote(possession.source, derived.ballCoverage)}
+          </p>
+
+          {possession.current_possession && (
+            <div className="mt-2 p-3 bg-green-50 rounded-lg border border-green-200">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                <span className="text-sm font-medium text-green-800">
-                  Current Possession
-                </span>
+                <span className="text-sm font-medium text-green-800">Current Possession</span>
               </div>
-                <div className="text-xs text-green-600 mt-1">
-                  Player {possession_stats?.current_possession.player_id}
-                  ({possession_stats?.current_possession.team})
-                </div>
+              <div className="text-xs text-green-600 mt-1">
+                Player {possession.current_possession.player_id} ({possession.current_possession.team === 'team_a' ? derived.teamLabels.team_a : possession.current_possession.team === 'team_b' ? derived.teamLabels.team_b : possession.current_possession.team})
+              </div>
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Pass Stats */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
@@ -170,61 +125,138 @@ export function SoccerAnalytics() {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-3 gap-3 text-center">
             <div className="p-3 bg-gray-50 rounded-lg">
-                    <div className="text-xl font-bold text-gray-800 mb-1">
-                      {pass_stats?.total_passes || 0}
-                    </div>
-              <div className="text-xs text-gray-600 font-medium">Total Passes</div>
+              <div className="text-xl font-bold text-gray-800 mb-1 tabular-nums">{passes.total_passes}</div>
+              <div className="text-xs text-gray-600 font-medium">Attempted</div>
             </div>
             <div className="p-3 bg-green-50 rounded-lg">
-              <div className="text-xl font-bold text-green-600 mb-1">
-                {pass_stats?.successful_passes || 0}
-              </div>
-              <div className="text-xs text-gray-600 font-medium">Successful</div>
+              <div className="text-xl font-bold text-green-600 mb-1 tabular-nums">{passes.successful_passes}</div>
+              <div className="text-xs text-gray-600 font-medium">Completed</div>
             </div>
             <div className="p-3 bg-blue-50 rounded-lg">
-              <div className="text-xl font-bold text-blue-600 mb-1">
-                {pass_stats?.pass_success_rate.toFixed(1) || '0.0'}%
-              </div>
+              <div className="text-xl font-bold text-blue-600 mb-1 tabular-nums">{fmt(passes.pass_success_rate)}%</div>
               <div className="text-xs text-gray-600 font-medium">Success Rate</div>
             </div>
           </div>
-
           <div className="grid grid-cols-2 gap-3">
-            <div className="text-center p-3 bg-blue-50 rounded-lg">
-                    <div className="text-lg font-bold text-blue-700 mb-1">
-                      {pass_stats?.team_a_passes || 0}
-                    </div>
-              <div className="text-xs text-blue-600 font-medium">Team A Passes</div>
-            </div>
-            <div className="text-center p-3 bg-cyan-50 rounded-lg">
-              <div className="text-lg font-bold text-cyan-700 mb-1">
-                {pass_stats?.team_b_passes || 0}
-              </div>
-              <div className="text-xs text-cyan-600 font-medium">Team B Passes</div>
-            </div>
+            <TeamSwatchCard color={colorA} label={`${derived.teamLabels.team_a} passes`} value={String(passes.team_a_passes)} />
+            <TeamSwatchCard color={colorB} label={`${derived.teamLabels.team_b} passes`} value={String(passes.team_b_passes)} />
           </div>
+          <p className="text-[11px] text-gray-500">
+            A pass is counted when control moves between players. Completions stay with
+            the same team; a ball that travels and is picked up by the opposition is an
+            intercepted attempt.
+          </p>
 
-          {pass_stats?.recent_passes && pass_stats.recent_passes.length > 0 && (
-            <div className="mt-4">
+          {passes.recent_passes.length > 0 && (
+            <div>
               <h4 className="text-sm font-medium text-gray-700 mb-2">Recent Passes</h4>
               <div className="space-y-1 max-h-32 overflow-y-auto">
-                {pass_stats.recent_passes.slice(-5).map((pass, index) => (
-                  <div key={index} className="flex items-center justify-between text-xs p-2 bg-gray-50 rounded">
-                    <span>
-                      P{pass.from_player} → P{pass.to_player}
-                    </span>
-                    <Badge variant={pass.successful ? "default" : "destructive"} className="text-xs">
-                      {pass.successful ? "✓" : "✗"}
-                    </Badge>
-                  </div>
-                ))}
+                {passes.recent_passes.slice(-5).map((pass, index) => {
+                  const color = pass.team === 'team_b' ? colorB : colorA
+                  return (
+                    <div key={`${pass.from_player}-${pass.to_player}-${index}`} className="flex items-center justify-between text-xs p-2 rounded" style={{ background: rgbaFromHex(color, 0.1) }}>
+                      <span>P{pass.from_player} → P{pass.to_player}</span>
+                      <Badge variant={pass.successful ? 'default' : 'destructive'} className="text-xs">
+                        {pass.successful ? '✓' : '✗'}
+                      </Badge>
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Tracking Stats */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <div className="w-2 h-2 bg-emerald-500 rounded-full"></div>
+            Win Probability
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <TeamSwatchCard
+              color={colorA}
+              label={derived.teamLabels.team_a}
+              value={`${fmt(derived.extras.winA, 0)}%`}
+              sublabel="P(win)"
+            />
+            <TeamSwatchCard
+              color={colorB}
+              label={derived.teamLabels.team_b}
+              value={`${fmt(derived.extras.winB, 0)}%`}
+              sublabel="P(win)"
+            />
+          </div>
+          <div className="h-3 rounded-full overflow-hidden flex bg-gray-100">
+            <div className="h-full transition-all duration-300" style={{ width: `${derived.extras.winA}%`, backgroundColor: colorA }} />
+            <div className="h-full transition-all duration-300" style={{ width: `${derived.extras.winB}%`, backgroundColor: colorB }} />
+          </div>
+          {derived.extras.winFactors.length > 0 ? (
+            <div className="space-y-1.5 pt-1">
+              <p className="text-[11px] font-medium text-gray-600">What is driving this</p>
+              {derived.extras.winFactors.map((factor) => {
+                const favoursA = factor.contribution > 0
+                const strength = Math.min(100, Math.abs(factor.contribution) * 120)
+                return (
+                  <div key={factor.label} className="flex items-center gap-2 text-[11px]">
+                    <span className="w-20 shrink-0 text-gray-600">{factor.label}</span>
+                    <span className="relative h-1.5 flex-1 rounded-full bg-gray-100">
+                      <span
+                        className="absolute top-0 h-full rounded-full"
+                        style={{
+                          width: `${strength / 2}%`,
+                          [favoursA ? 'right' : 'left']: '50%',
+                          backgroundColor: favoursA ? colorA : colorB,
+                        }}
+                      />
+                      <span className="absolute left-1/2 top-[-2px] h-[10px] w-px bg-gray-300" />
+                    </span>
+                    <span className="w-32 shrink-0 truncate text-right text-gray-500" title={factor.detail}>
+                      {factor.detail}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500">Not enough play tracked yet to separate the teams.</p>
+          )}
+          <p className="text-xs text-gray-500">
+            {derived.extras.winConfidence === 'high' ? 'High confidence' : 'Live estimate'} · logistic model over the signals above
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <div className="w-2 h-2 bg-indigo-500 rounded-full"></div>
+            Advanced Metrics
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 gap-3 text-center">
+          <div className="p-3 bg-gray-50 rounded-lg">
+            <div className="text-lg font-bold tabular-nums">{derived.extras.sprints}</div>
+            <div className="text-xs text-gray-600">Sprint bursts</div>
+          </div>
+          <div className="p-3 bg-gray-50 rounded-lg">
+            <div className="text-lg font-bold tabular-nums">{derived.team.separation}px</div>
+            <div className="text-xs text-gray-600">Team separation</div>
+          </div>
+          <div className="p-3 rounded-lg" style={{ background: rgbaFromHex(colorA, 0.12) }}>
+            <div className="text-lg font-bold tabular-nums" style={{ color: colorA }}>{fmt(derived.extras.attackingThirdA, 0)}%</div>
+            <div className="text-xs" style={{ color: colorA }}>A in attacking third</div>
+          </div>
+          <div className="p-3 rounded-lg" style={{ background: rgbaFromHex(colorB, 0.12) }}>
+            <div className="text-lg font-bold tabular-nums" style={{ color: colorB }}>{fmt(derived.extras.attackingThirdB, 0)}%</div>
+            <div className="text-xs" style={{ color: colorB }}>B in attacking third</div>
+          </div>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
@@ -235,31 +267,26 @@ export function SoccerAnalytics() {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-3 text-center">
             <div className="p-3 bg-gray-50 rounded-lg">
-              <div className="text-xl font-bold text-gray-800 mb-1">
-                {currentAnalytics?.tracking_data?.length || tracks.size}
-              </div>
-              <div className="text-xs text-gray-600 font-medium">Objects Tracked</div>
+              <div className="text-xl font-bold text-gray-800 mb-1 tabular-nums">{derived.playerCount}</div>
+              <div className="text-xs text-gray-600 font-medium">Players Tracked</div>
             </div>
             <div className="p-3 bg-gray-50 rounded-lg">
-              <div className="text-xl font-bold text-gray-800 mb-1">
-                {currentAnalytics?.frame_id || 'N/A'}
-              </div>
+              <div className="text-xl font-bold text-gray-800 mb-1 tabular-nums">{derived.frameId || 'N/A'}</div>
               <div className="text-xs text-gray-600 font-medium">Current Frame</div>
             </div>
           </div>
-          
-          <div className="text-center p-3 bg-blue-50 rounded-lg">
-            <div className="text-xs text-gray-600 font-medium">
-              {currentAnalytics?.timestamp 
-                ? `Last updated: ${new Date(currentAnalytics.timestamp * 1000).toLocaleTimeString()}`
-                : hasTrackingData 
-                  ? 'Tracking completed'
-                  : 'No data available'
-              }
-            </div>
+          <div className="text-center p-3 bg-blue-50 rounded-lg text-xs text-gray-600">
+            {derived.ballDetected ? 'Ball track available' : 'Ball not detected yet'}
+            {analyticsData?.timestamp
+              ? ` · Updated ${new Date(analyticsData.timestamp * 1000).toLocaleTimeString()}`
+              : processingStatus === 'completed'
+                ? ' · Tracking completed'
+                : ''}
           </div>
         </CardContent>
       </Card>
+
+      <AiInsights derived={derived} enabled={derived.ready} live={isLive} />
     </div>
   )
 }

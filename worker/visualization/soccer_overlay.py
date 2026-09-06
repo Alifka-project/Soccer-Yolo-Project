@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from typing import List, Dict, Tuple, Optional
 import time
+from tracking.team_classifier import hex_to_bgr
 
 class SoccerOverlayRenderer:
     """Enhanced soccer overlay renderer matching Tryolabs style"""
@@ -10,15 +11,16 @@ class SoccerOverlayRenderer:
         """Initialize overlay renderer"""
         # Color schemes
         self.colors = {
-            'ball': (0, 0, 255),        # Red for ball
-            'person': (0, 255, 0),      # Green for players
-            'team_a': (255, 0, 0),      # Blue for team A
-            'team_b': (255, 255, 0),    # Cyan for team B
-            'possession': (255, 0, 255), # Magenta for possession
-            'pass': (0, 255, 255),      # Yellow for passes
-            'text': (255, 255, 255),    # White for text
-            'background': (0, 0, 0)     # Black for backgrounds
+            'ball': (48, 48, 255),
+            'person': (40, 40, 225),
+            'team_a': (72, 29, 225),      # rose-ish BGR
+            'team_b': (225, 99, 37),      # blue BGR
+            'possession': (180, 80, 255),
+            'pass': (40, 200, 255),
+            'text': (255, 255, 255),
+            'background': (12, 12, 16)
         }
+        self.team_hex = {"team_a": "#E11D48", "team_b": "#2563EB"}
         
         # Font settings
         self.font = cv2.FONT_HERSHEY_SIMPLEX
@@ -41,8 +43,10 @@ class SoccerOverlayRenderer:
         
     def render_overlay(self, frame: np.ndarray, tracked_objects: List[Dict], 
                       possession_stats: Dict = None, pass_events: List[Dict] = None,
-                      frame_id: int = 0) -> np.ndarray:
+                      frame_id: int = 0, team_colors: Dict = None,
+                      win_probability: Dict = None) -> np.ndarray:
         """Render comprehensive soccer overlay"""
+        self.team_hex = team_colors or {"team_a": "#E11D48", "team_b": "#2563EB"}
         overlay_frame = frame.copy()
         
         # Render trajectories first (behind other elements)
@@ -59,10 +63,13 @@ class SoccerOverlayRenderer:
         
         # Render object bounding boxes and labels
         overlay_frame = self._render_objects(overlay_frame, tracked_objects)
+        overlay_frame = self._render_team_legend(overlay_frame)
         
         # Render statistics overlay
         if self.show_stats:
-            overlay_frame = self._render_stats_overlay(overlay_frame, possession_stats, frame_id)
+            overlay_frame = self._render_stats_overlay(
+                overlay_frame, possession_stats, frame_id, win_probability
+            )
         
         return overlay_frame
     
@@ -159,97 +166,96 @@ class SoccerOverlayRenderer:
             class_name = obj.get('class', 'unknown')
             track_id = obj.get('track_id', -1)
             confidence = obj.get('score', 0.0)
-            
-            # Determine color
+            team = obj.get('team')
+
             if class_name == 'ball':
                 color = self.colors['ball']
-            elif class_name == 'person':
-                # Assign team colors based on position (simplified)
-                center_x = x + w/2
-                field_width = frame.shape[1]
-                if center_x < field_width / 2:
-                    color = self.colors['team_a']
-                else:
-                    color = self.colors['team_b']
+            elif obj.get('color'):
+                color = hex_to_bgr(obj['color'])
+            elif team in ('team_a', 'team_b'):
+                color = hex_to_bgr(self.team_hex.get(team, '#2563EB'))
             else:
                 color = self.colors['person']
-            
-            # Draw bounding box
-            cv2.rectangle(frame, 
-                         (int(x), int(y)), 
-                         (int(x + w), int(y + h)), 
-                         color, 2)
-            
-            # Draw label
-            label = f"{class_name.upper()}:{track_id} ({confidence:.2f})"
-            label_size = cv2.getTextSize(label, self.font, self.font_scale, self.font_thickness)[0]
-            
-            # Draw label background
-            cv2.rectangle(frame,
-                         (int(x), int(y) - label_size[1] - 10),
-                         (int(x) + label_size[0], int(y)),
-                         self.colors['background'], -1)
-            
-            # Draw label text
-            cv2.putText(frame, label,
-                       (int(x), int(y) - 5),
-                       self.font, self.font_scale,
-                       self.colors['text'], self.font_thickness)
-            
-            # Draw center point
+
+            x_i, y_i, w_i, h_i = int(x), int(y), int(w), int(h)
+            cv2.rectangle(frame, (x_i, y_i), (x_i + w_i, y_i + h_i), color, 2, lineType=cv2.LINE_AA)
+
+            if class_name == 'ball':
+                label = 'BALL'
+            else:
+                side = 'A' if team == 'team_a' else 'B' if team == 'team_b' else '?'
+                label = f"{side}#{track_id}"
+
+            (tw, th), _ = cv2.getTextSize(label, self.font, 0.55, 1)
+            cv2.rectangle(frame, (x_i, max(0, y_i - th - 8)), (x_i + tw + 8, y_i), color, -1)
+            cv2.putText(frame, label, (x_i + 4, y_i - 5), self.font, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
             center = self._get_center(bbox)
-            cv2.circle(frame, 
-                      (int(center[0]), int(center[1])), 
-                      3, color, -1)
-        
+            cv2.circle(frame, (int(center[0]), int(center[1])), 3, color, -1, lineType=cv2.LINE_AA)
+
         return frame
     
-    def _render_stats_overlay(self, frame: np.ndarray, possession_stats: Dict, frame_id: int) -> np.ndarray:
+    def _render_team_legend(self, frame: np.ndarray) -> np.ndarray:
+        a_color = hex_to_bgr(self.team_hex.get("team_a", "#E11D48"))
+        b_color = hex_to_bgr(self.team_hex.get("team_b", "#2563EB"))
+        cv2.rectangle(frame, (12, 8), (210, 42), (12, 12, 16), -1)
+        cv2.rectangle(frame, (20, 16), (38, 34), a_color, -1, lineType=cv2.LINE_AA)
+        cv2.putText(frame, "Team A", (44, 31), self.font, 0.5, a_color, 1, cv2.LINE_AA)
+        cv2.rectangle(frame, (118, 16), (136, 34), b_color, -1, lineType=cv2.LINE_AA)
+        cv2.putText(frame, "Team B", (142, 31), self.font, 0.5, b_color, 1, cv2.LINE_AA)
+        return frame
+
+    def _render_stats_overlay(
+        self,
+        frame: np.ndarray,
+        possession_stats: Dict,
+        frame_id: int,
+        win_probability: Dict = None,
+    ) -> np.ndarray:
         """Render statistics overlay"""
-        if not possession_stats:
-            return frame
+        possession_stats = possession_stats or {}
+        win_probability = win_probability or {}
         
-        # Create stats panel
-        panel_height = 120
+        panel_height = 132
         panel_width = 300
         panel_x = 10
         panel_y = frame.shape[0] - panel_height - 10
         
-        # Draw stats panel background
         overlay = frame.copy()
         cv2.rectangle(overlay, 
                      (panel_x, panel_y), 
                      (panel_x + panel_width, panel_y + panel_height),
                      self.colors['background'], -1)
-        
-        # Add transparency
         cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
         
-        # Draw stats text
-        y_offset = panel_y + 20
-        
-        # Frame info
+        y_offset = panel_y + 22
         cv2.putText(frame, f"Frame: {frame_id}",
                    (panel_x + 10, y_offset),
                    self.font, self.font_scale,
                    self.colors['text'], self.font_thickness)
-        y_offset += 20
-        
-        # Possession stats
-        if 'team_a_percentage' in possession_stats:
-            cv2.putText(frame, f"Team A: {possession_stats['team_a_percentage']:.1f}%",
+        y_offset += 22
+
+        a_color = hex_to_bgr(self.team_hex.get('team_a', '#E11D48'))
+        b_color = hex_to_bgr(self.team_hex.get('team_b', '#2563EB'))
+        win_a = win_probability.get('team_a')
+        win_b = win_probability.get('team_b')
+        if win_a is not None and win_b is not None:
+            cv2.putText(frame, f"Win A {float(win_a):.0f}%",
                        (panel_x + 10, y_offset),
                        self.font, self.font_scale,
-                       self.colors['team_a'], self.font_thickness)
-            y_offset += 20
-            
-            cv2.putText(frame, f"Team B: {possession_stats['team_b_percentage']:.1f}%",
+                       a_color, self.font_thickness)
+            y_offset += 22
+            cv2.putText(frame, f"Win B {float(win_b):.0f}%",
                        (panel_x + 10, y_offset),
                        self.font, self.font_scale,
-                       self.colors['team_b'], self.font_thickness)
-            y_offset += 20
+                       b_color, self.font_thickness)
+            y_offset += 22
+        else:
+            cv2.putText(frame, "Win -- collecting",
+                       (panel_x + 10, y_offset),
+                       self.font, self.font_scale,
+                       self.colors['text'], 1)
+            y_offset += 22
         
-        # Pass stats
         if 'passes' in possession_stats:
             cv2.putText(frame, f"Passes: {possession_stats['passes']}",
                        (panel_x + 10, y_offset),

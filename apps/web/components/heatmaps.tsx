@@ -1,138 +1,62 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useSessionStore } from '@/lib/store'
+import { useState } from 'react'
+import { useDerivedAnalytics } from '@/lib/use-derived-analytics'
+import { fmt, rgbTuple } from '@/lib/analytics'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
+import { TeamLegend } from '@/components/team-legend'
 
-interface HeatmapData {
-  x: number
-  y: number
-  intensity: number
-}
+function HeatmapGrid({
+  positions,
+  color,
+  height = 'h-16',
+}: {
+  positions: Array<{ x: number; y: number }>
+  color: string
+  height?: string
+}) {
+  const COLS = 12
+  const ROWS = 8
+  const xs = positions.map((p) => p.x)
+  const ys = positions.map((p) => p.y)
+  const minX = xs.length ? Math.min(...xs) : 0
+  const maxX = xs.length ? Math.max(...xs) : 1
+  const minY = ys.length ? Math.min(...ys) : 0
+  const maxY = ys.length ? Math.max(...ys) : 1
+  const rangeX = Math.max(maxX - minX, 1)
+  const rangeY = Math.max(maxY - minY, 1)
+  const grid = new Array(COLS * ROWS).fill(0)
 
-interface PlayerHeatmap {
-  playerId: string
-  positions: HeatmapData[]
-  totalTime: number
-  avgIntensity: number
-}
+  positions.forEach((p) => {
+    const col = Math.min(COLS - 1, Math.floor(((p.x - minX) / rangeX) * COLS))
+    const row = Math.min(ROWS - 1, Math.floor(((p.y - minY) / rangeY) * ROWS))
+    grid[row * COLS + col]++
+  })
+  const maxCount = Math.max(1, ...grid)
 
-interface TeamHeatmap {
-  team: string
-  positions: HeatmapData[]
-  density: number
+  return (
+    <div className={`grid grid-cols-12 gap-0.5 ${height} bg-emerald-950/10 rounded p-1`}>
+      {grid.map((count, i) => {
+        const opacity = count > 0 ? (count / maxCount) * 0.85 + 0.15 : 0.04
+        return (
+          <div
+            key={i}
+            className="rounded-sm"
+            style={{ backgroundColor: `rgba(${color}, ${opacity})` }}
+          />
+        )
+      })}
+    </div>
+  )
 }
 
 export function Heatmaps() {
-  const { processingStatus, tracks, progress, analyticsData, isRealtimeMode } = useSessionStore()
-  const [localAnalytics, setLocalAnalytics] = useState(analyticsData)
-  const [playerHeatmaps, setPlayerHeatmaps] = useState<Map<string, PlayerHeatmap>>(new Map())
-  const [teamHeatmaps, setTeamHeatmaps] = useState<TeamHeatmap[]>([])
-  const [selectedView, setSelectedView] = useState<'players' | 'teams' | 'overall'>('players')
+  const { derived, processingStatus, progress } = useDerivedAnalytics()
+  const [selectedView, setSelectedView] = useState<'players' | 'teams' | 'overall'>('overall')
 
-  useEffect(() => {
-    // Listen for analytics updates
-    const handleAnalyticsUpdate = (event: CustomEvent) => {
-      setLocalAnalytics(event.detail)
-    }
-
-    window.addEventListener('analyticsUpdate', handleAnalyticsUpdate as EventListener)
-    
-    return () => {
-      window.removeEventListener('analyticsUpdate', handleAnalyticsUpdate as EventListener)
-    }
-  }, [])
-
-  useEffect(() => {
-    const calculateHeatmaps = () => {
-      if (!tracks.size && !analyticsData) return
-
-      const currentAnalytics = localAnalytics || analyticsData
-      const playerMaps = new Map<string, PlayerHeatmap>()
-      const teamMaps = new Map<string, HeatmapData[]>()
-      const overallPositions: HeatmapData[] = []
-
-      // Process completed tracking data
-      if (tracks.size > 0) {
-        tracks.forEach((track, id) => {
-          const positions = track.positions || []
-          const heatmapPositions: HeatmapData[] = positions.map((pos: any) => ({
-            x: pos.x + pos.w / 2,
-            y: pos.y + pos.h / 2,
-            intensity: pos.score || 1
-          }))
-
-          playerMaps.set(id, {
-            playerId: id,
-            positions: heatmapPositions,
-            totalTime: positions.length * (1/30), // Assuming 30 FPS
-            avgIntensity: heatmapPositions.reduce((sum, p) => sum + p.intensity, 0) / heatmapPositions.length
-          })
-
-          // Add to overall positions
-          overallPositions.push(...heatmapPositions)
-
-          // Add to team positions
-          const team = track.team || 'unknown'
-          if (!teamMaps.has(team)) {
-            teamMaps.set(team, [])
-          }
-          teamMaps.get(team)!.push(...heatmapPositions)
-        })
-      }
-
-      // Process real-time analytics data
-      if (currentAnalytics?.tracking_data && isRealtimeMode) {
-        currentAnalytics.tracking_data.forEach((obj: any) => {
-          const playerId = obj.track_id.toString()
-          const position = {
-            x: obj.bbox[0] + obj.bbox[2] / 2,
-            y: obj.bbox[1] + obj.bbox[3] / 2,
-            intensity: obj.confidence || 1
-          }
-
-          // Update player heatmap
-          const existing = playerMaps.get(playerId) || {
-            playerId,
-            positions: [] as HeatmapData[],
-            totalTime: 0,
-            avgIntensity: 0
-          }
-          existing.positions.push(position)
-          existing.totalTime += 1/30
-          existing.avgIntensity = existing.positions.reduce((sum, p) => sum + p.intensity, 0) / existing.positions.length
-          playerMaps.set(playerId, existing)
-
-          // Add to overall and team positions
-          overallPositions.push(position)
-          const team = 'unknown' // Real-time doesn't have team info yet
-          if (!teamMaps.has(team)) {
-            teamMaps.set(team, [])
-          }
-          teamMaps.get(team)!.push(position)
-        })
-      }
-
-      setPlayerHeatmaps(playerMaps)
-
-      // Create team heatmaps
-      const teamHeatmapData: TeamHeatmap[] = Array.from(teamMaps.entries()).map(([team, positions]) => ({
-        team,
-        positions,
-        density: positions.length
-      }))
-
-      setTeamHeatmaps(teamHeatmapData)
-    }
-
-    calculateHeatmaps()
-  }, [tracks, localAnalytics, analyticsData, isRealtimeMode])
-
-  const hasData = tracks.size > 0 || (localAnalytics && isRealtimeMode)
-
-  if (!hasData) {
+  if (!derived.ready) {
     return (
       <Card className="w-full">
         <CardHeader>
@@ -143,165 +67,42 @@ export function Heatmaps() {
         </CardHeader>
         <CardContent>
           <p className="text-gray-500 text-sm">
-            {processingStatus === 'processing' 
-              ? `Processing... ${progress}%` 
-              : 'Start tracking to see heatmaps'}
+            {processingStatus === 'processing' ? `Processing... ${progress}%` : 'Press play — heatmaps build as the video runs'}
           </p>
         </CardContent>
       </Card>
     )
   }
 
+  const overallPoints = derived.heatmaps.players.flatMap((player) => player.points)
+  const colorA = derived.teamColors.team_a
+  const colorB = derived.teamColors.team_b
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="font-medium text-lg">Heatmaps</h3>
         <div className="flex gap-1">
-          <Badge 
-            variant={selectedView === 'players' ? 'default' : 'outline'} 
-            className="cursor-pointer text-xs"
-            onClick={() => setSelectedView('players')}
-          >
-            Players
-          </Badge>
-          <Badge 
-            variant={selectedView === 'teams' ? 'default' : 'outline'} 
-            className="cursor-pointer text-xs"
-            onClick={() => setSelectedView('teams')}
-          >
-            Teams
-          </Badge>
-          <Badge 
-            variant={selectedView === 'overall' ? 'default' : 'outline'} 
-            className="cursor-pointer text-xs"
-            onClick={() => setSelectedView('overall')}
-          >
-            Overall
-          </Badge>
+          {(['overall', 'teams', 'players'] as const).map((view) => (
+            <Badge
+              key={view}
+              variant={selectedView === view ? 'default' : 'outline'}
+              className="cursor-pointer text-xs capitalize"
+              onClick={() => setSelectedView(view)}
+            >
+              {view}
+            </Badge>
+          ))}
         </div>
       </div>
+      <TeamLegend colors={derived.teamColors} labels={derived.teamLabels} />
 
       {processingStatus === 'processing' && (
         <Card>
           <CardContent className="pt-6">
-            <div className="space-y-2">
-              <div className="flex justify-between text-sm">
-                <span>Generating heatmaps...</span>
-                <span>{progress}%</span>
-              </div>
-              <Progress value={progress} className="h-2" />
-            </div>
+            <Progress value={progress} className="h-2" />
           </CardContent>
         </Card>
-      )}
-
-      {selectedView === 'players' && (
-        <div className="space-y-3 max-h-80 overflow-y-auto">
-          {Array.from(playerHeatmaps.entries()).map(([id, heatmap]) => (
-            <Card key={id} className="border-l-4 border-l-purple-500">
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                    Player {id} Heatmap
-                  </div>
-                  <Badge variant="outline" className="text-xs">
-                    {heatmap.positions.length} points
-                  </Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="pt-0">
-                <div className="grid grid-cols-2 gap-4 text-xs">
-                  <div className="space-y-1">
-                    <div className="text-gray-600">Data Points</div>
-                    <div className="font-medium">{heatmap.positions.length}</div>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="text-gray-600">Total Time</div>
-                    <div className="font-medium">{Math.round(heatmap.totalTime)}s</div>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="text-gray-600">Avg Intensity</div>
-                    <div className="font-medium">{heatmap.avgIntensity.toFixed(2)}</div>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="text-gray-600">Coverage</div>
-                    <div className="font-medium">
-                      {heatmap.positions.length > 0 ? 'Active' : 'Limited'}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Simple heatmap visualization */}
-                <div className="mt-3 pt-3 border-t">
-                  <div className="text-xs text-gray-500 mb-2">Position Distribution</div>
-                  <div className="grid grid-cols-10 gap-1 h-16 bg-gray-100 rounded p-1">
-                    {Array.from({ length: 100 }, (_, i) => {
-                      const col = i % 10
-                      const row = Math.floor(i / 10)
-                      const cellPositions = heatmap.positions.filter(p => {
-                        const xZone = Math.floor(p.x / 100) % 10
-                        const yZone = Math.floor(p.y / 100) % 10
-                        return xZone === col && yZone === row
-                      })
-                      const intensity = Math.min(cellPositions.length / 5, 1)
-                      const opacity = intensity * 0.8 + 0.2
-                      return (
-                        <div
-                          key={i}
-                          className="rounded-sm"
-                          style={{
-                            backgroundColor: `rgba(147, 51, 234, ${opacity})`,
-                            opacity: cellPositions.length > 0 ? 1 : 0.1
-                          }}
-                        />
-                      )
-                    })}
-                  </div>
-                  <div className="text-xs text-gray-500 mt-1">
-                    Purple intensity = player activity
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
-
-      {selectedView === 'teams' && (
-        <div className="space-y-3">
-          {teamHeatmaps.map((teamHeatmap, index) => (
-            <Card key={index} className="border-l-4 border-l-green-500">
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                    Team {teamHeatmap.team} Heatmap
-                  </div>
-                  <Badge variant="outline" className="text-xs">
-                    {teamHeatmap.positions.length} points
-                  </Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="pt-0">
-                <div className="grid grid-cols-3 gap-4 text-xs">
-                  <div className="space-y-1">
-                    <div className="text-gray-600">Data Points</div>
-                    <div className="font-medium">{teamHeatmap.positions.length}</div>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="text-gray-600">Density</div>
-                    <div className="font-medium">{teamHeatmap.density}</div>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="text-gray-600">Coverage</div>
-                    <div className="font-medium">Team-wide</div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
       )}
 
       {selectedView === 'overall' && (
@@ -310,48 +111,67 @@ export function Heatmaps() {
             <CardTitle className="text-sm">Overall Field Heatmap</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-xs text-gray-600 mb-3">
-              Combined player movement across the field
-            </div>
-            <div className="grid grid-cols-10 gap-1 h-32 bg-gray-100 rounded p-2">
-              {Array.from({ length: 100 }, (_, i) => {
-                const col = i % 10
-                const row = Math.floor(i / 10)
-                const allPositions = Array.from(playerHeatmaps.values()).flatMap(h => h.positions)
-                const cellPositions = allPositions.filter(p => {
-                  const xZone = Math.floor(p.x / 100) % 10
-                  const yZone = Math.floor(p.y / 100) % 10
-                  return xZone === col && yZone === row
-                })
-                const intensity = Math.min(cellPositions.length / 10, 1)
-                const opacity = intensity * 0.8 + 0.2
-                return (
-                  <div
-                    key={i}
-                    className="rounded-sm"
-                    style={{
-                      backgroundColor: `rgba(59, 130, 246, ${opacity})`,
-                      opacity: cellPositions.length > 0 ? 1 : 0.1
-                    }}
-                  />
-                )
-              })}
-            </div>
-            <div className="text-xs text-gray-500 mt-2">
-              Blue intensity = combined player activity
-            </div>
+            <HeatmapGrid positions={overallPoints} color="16, 185, 129" height="h-36" />
+            <div className="text-xs text-gray-500 mt-2">{overallPoints.length} position samples</div>
           </CardContent>
         </Card>
       )}
 
-      {playerHeatmaps.size === 0 && teamHeatmaps.length === 0 && hasData && (
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-gray-500 text-sm text-center">
-              Generating heatmap data...
-            </p>
-          </CardContent>
-        </Card>
+      {selectedView === 'teams' && (
+        <div className="space-y-3">
+          {derived.heatmaps.teams.map((teamHeatmap) => {
+            const color = teamHeatmap.team === 'team_b' ? colorB : teamHeatmap.team === 'team_a' ? colorA : '#6B7280'
+            const label = teamHeatmap.team === 'team_a'
+              ? derived.teamLabels.team_a
+              : teamHeatmap.team === 'team_b'
+                ? derived.teamLabels.team_b
+                : teamHeatmap.team
+            return (
+              <Card key={teamHeatmap.team} className="border-l-4" style={{ borderLeftColor: color }}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center justify-between text-sm">
+                    <span className="flex items-center gap-2">
+                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
+                      {label}
+                    </span>
+                    <Badge variant="outline" className="text-xs">{teamHeatmap.points.length} points</Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <HeatmapGrid positions={teamHeatmap.points} color={rgbTuple(color)} height="h-24" />
+                </CardContent>
+              </Card>
+            )
+          })}
+        </div>
+      )}
+
+      {selectedView === 'players' && (
+        <div className="space-y-3 max-h-80 overflow-y-auto">
+          {derived.heatmaps.players.map((heatmap) => {
+            const color = heatmap.team === 'team_b' ? colorB : heatmap.team === 'team_a' ? colorA : '#7C3AED'
+            return (
+              <Card key={heatmap.id} className="border-l-4" style={{ borderLeftColor: color }}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center justify-between text-sm">
+                    <span>Player {heatmap.id}</span>
+                    <Badge variant="outline" className="text-xs">{heatmap.points.length} points</Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+                    <div>Time {fmt(heatmap.timeOnField, 0)}s</div>
+                    <div className="flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
+                      {heatmap.team === 'team_a' ? derived.teamLabels.team_a : heatmap.team === 'team_b' ? derived.teamLabels.team_b : heatmap.team}
+                    </div>
+                  </div>
+                  <HeatmapGrid positions={heatmap.points} color={rgbTuple(color)} />
+                </CardContent>
+              </Card>
+            )
+          })}
+        </div>
       )}
     </div>
   )

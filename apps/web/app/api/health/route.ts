@@ -8,9 +8,9 @@ export async function GET() {
   if (!workerUrl) {
     return NextResponse.json({
       ok: true,
-      mode: 'demo',
+      mode: 'browser',
       worker: null,
-      message: 'No YOLO worker configured. The dashboard runs in demo mode on Vercel.',
+      message: 'No YOLO26 worker configured. Detection and analytics run in the browser.',
     })
   }
 
@@ -19,13 +19,13 @@ export async function GET() {
     const worker = await res.json().catch(() => null)
     return NextResponse.json({
       ok: res.ok,
-      mode: res.ok ? 'worker' : 'demo',
+      mode: res.ok ? 'worker' : 'browser',
       worker,
     })
   } catch (error) {
     return NextResponse.json({
       ok: false,
-      mode: 'demo',
+      mode: 'browser',
       worker: null,
       error: error instanceof Error ? error.message : 'Worker unreachable',
     })

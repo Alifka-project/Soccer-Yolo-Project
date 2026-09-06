@@ -55,8 +55,10 @@ class AdvancedTrack:
                 # Update Kalman filter
                 self._update_kalman(bbox)
         
-        # Confirm track if it has been stable
-        if self.age >= 3 and np.mean(self.confidence_history) > 0.5:
+        # Confirm track if it has been stable. Balls stay low-confidence on broadcast video.
+        if self.class_name == "ball":
+            self.is_confirmed = self.age >= 2
+        elif self.age >= 3 and np.mean(self.confidence_history) > 0.5:
             self.is_confirmed = True
     
     def _update_kalman(self, bbox: List[float]):
@@ -98,7 +100,8 @@ class AdvancedTrack:
     
     def is_active(self) -> bool:
         """Check if track is still active"""
-        return self.time_since_update < 10 and self.age > 0
+        limit = 18 if self.class_name == "ball" else 10
+        return self.time_since_update < limit and self.age > 0
     
     def get_average_confidence(self) -> float:
         """Get average confidence over recent frames"""
@@ -122,10 +125,10 @@ class AdvancedMultiObjectTracker:
         self.lost_tracks: Dict[int, AdvancedTrack] = {}
         self.removed_tracks = set()
         
-        # Class-specific tracking parameters
+        # Class-specific tracking parameters. Tiny balls never survive IoU matching.
         self.class_params = {
-            'person': {'match_thresh': 0.6, 'max_time_lost': 20},
-            'ball': {'match_thresh': 0.8, 'max_time_lost': 10}
+            'person': {'match_thresh': 0.55, 'max_time_lost': 20, 'track_thresh': 0.22},
+            'ball': {'match_thresh': 0.15, 'max_time_lost': 18, 'track_thresh': 0.08, 'max_center_dist': 96},
         }
     
     def update(self, detections: List[Dict]) -> List[Dict]:
@@ -136,46 +139,31 @@ class AdvancedMultiObjectTracker:
         for track in self.tracks.values():
             track.time_since_update += 1
         
-        if not detections:
-            # No detections, predict positions for existing tracks
-            return self._predict_tracks()
-        
-        # Separate detections by class
         person_detections = [d for d in detections if d.get('class') == 'person']
         ball_detections = [d for d in detections if d.get('class') == 'ball']
-        
-        # Track persons and balls separately
         tracked_objects = []
-        
-        # Track persons
-        if person_detections:
-            person_tracks = self._update_class_tracks(person_detections, 'person')
-            tracked_objects.extend(person_tracks)
-        
-        # Track ball
-        if ball_detections:
-            ball_tracks = self._update_class_tracks(ball_detections, 'ball')
-            tracked_objects.extend(ball_tracks)
-        
-        # Handle lost tracks
+        tracked_objects.extend(self._update_class_tracks(person_detections, 'person'))
+        tracked_objects.extend(self._update_class_tracks(ball_detections, 'ball'))
         self._handle_lost_tracks()
-        
         return tracked_objects
     
     def _update_class_tracks(self, detections: List[Dict], class_name: str) -> List[Dict]:
         """Update tracks for a specific class"""
-        if not detections:
-            return []
-        
+        params = self.class_params.get(class_name, {})
+        track_thresh = params.get('track_thresh', self.track_thresh)
+
         # Get existing tracks for this class
         class_tracks = {tid: track for tid, track in self.tracks.items() 
                        if track.class_name == class_name}
+
+        if not detections:
+            return self._predict_class_tracks(class_name)
         
         if not class_tracks:
             # Create new tracks for all detections
             tracked_objects = []
             for det in detections:
-                if det['score'] > self.track_thresh:
+                if det['score'] >= track_thresh:
                     track_id = self.track_id_count
                     self.track_id_count += 1
                     
@@ -214,9 +202,13 @@ class AdvancedMultiObjectTracker:
                 'confidence': float(track.get_average_confidence())
             })
         
+        # Keep a single ball identity when one track already exists
+        if class_name == 'ball' and class_tracks and matched_tracks:
+            unmatched_dets = []
+
         # Create new tracks for unmatched detections
         for det_idx in unmatched_dets:
-            if det_scores[det_idx] > self.track_thresh:
+            if det_scores[det_idx] >= track_thresh:
                 track_id = self.track_id_count
                 self.track_id_count += 1
                 
@@ -242,59 +234,62 @@ class AdvancedMultiObjectTracker:
         if not tracks:
             return [], list(range(len(det_bboxes)))
         
-        # Get class-specific parameters
         params = self.class_params.get(class_name, {})
         match_thresh = params.get('match_thresh', self.match_thresh)
+        max_center_dist = params.get('max_center_dist', 96)
         
-        # Create cost matrix
         track_ids = list(tracks.keys())
-        cost_matrix = np.zeros((len(track_ids), len(det_bboxes)))
-        
-        for i, track_id in enumerate(track_ids):
-            track = tracks[track_id]
-            # Use smoothed position for matching
-            smoothed_bbox = track.get_smoothed_bbox()
-            
-            for j, det_bbox in enumerate(det_bboxes):
-                iou = self.compute_iou(smoothed_bbox, det_bbox)
-                cost_matrix[i, j] = 1 - iou
-        
-        # Hungarian algorithm for optimal matching
         matched_tracks = []
         unmatched_dets = list(range(len(det_bboxes)))
         
-        for i, track_id in enumerate(track_ids):
+        for track_id in track_ids:
+            track = tracks[track_id]
             best_match = -1
-            best_iou = 0
+            best_score = match_thresh
             
             for j in unmatched_dets:
-                iou = 1 - cost_matrix[i, j]
-                if iou > match_thresh and iou > best_iou:
+                score = self._association_score(track, det_bboxes[j], class_name, max_center_dist)
+                if score > best_score:
                     best_match = j
-                    best_iou = iou
+                    best_score = score
             
             if best_match != -1:
                 matched_tracks.append((track_id, best_match))
                 unmatched_dets.remove(best_match)
         
         return matched_tracks, unmatched_dets
+
+    def _association_score(self, track: AdvancedTrack, det_bbox, class_name: str, max_center_dist: float) -> float:
+        if class_name == 'ball':
+            dcx = float(det_bbox[0]) + float(det_bbox[2]) / 2.0
+            dcy = float(det_bbox[1]) + float(det_bbox[3]) / 2.0
+            dist = float(np.hypot(track.kf_x - dcx, track.kf_y - dcy))
+            if dist > max_center_dist:
+                return 0.0
+            return 1.0 - dist / max_center_dist
+        return self.compute_iou(track.get_smoothed_bbox(), det_bbox)
     
     def _predict_tracks(self) -> List[Dict]:
         """Predict positions for tracks without detections"""
         tracked_objects = []
-        
+        tracked_objects.extend(self._predict_class_tracks('person'))
+        tracked_objects.extend(self._predict_class_tracks('ball'))
+        return tracked_objects
+
+    def _predict_class_tracks(self, class_name: str) -> List[Dict]:
+        tracked_objects = []
         for track_id, track in self.tracks.items():
-            if track.is_active():
-                predicted_bbox = track.predict(self.frame_id)
-                tracked_objects.append({
-                    'track_id': int(track_id),
-                    'bbox': predicted_bbox,
-                    'score': float(track.score),
-                    'frame_id': int(self.frame_id),
-                    'class': track.class_name,
-                    'confidence': float(track.get_average_confidence())
-                })
-        
+            if track.class_name != class_name or not track.is_active():
+                continue
+            predicted_bbox = track.predict(self.frame_id)
+            tracked_objects.append({
+                'track_id': int(track_id),
+                'bbox': predicted_bbox,
+                'score': float(track.score),
+                'frame_id': int(self.frame_id),
+                'class': track.class_name,
+                'confidence': float(track.get_average_confidence())
+            })
         return tracked_objects
     
     def _handle_lost_tracks(self):
@@ -302,7 +297,8 @@ class AdvancedMultiObjectTracker:
         tracks_to_remove = []
         
         for track_id, track in self.tracks.items():
-            if track.time_since_update > self.max_time_lost:
+            lost_limit = self.class_params.get(track.class_name, {}).get('max_time_lost', self.max_time_lost)
+            if track.time_since_update > lost_limit:
                 tracks_to_remove.append(track_id)
         
         for track_id in tracks_to_remove:

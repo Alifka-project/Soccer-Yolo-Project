@@ -6,6 +6,7 @@ node_modules
 
 # Testing
 coverage
+.test-build/
 
 # Next.js
 .next/
@@ -46,6 +47,10 @@ venv/
 .venv
 *.egg-info/
 .pytest_cache/
+
+# Local demo clip (broadcast footage - do not commit or deploy)
+apps/web/public/__*.mp4
+apps/web/public/__*.mov
 
 # Models
 *.pt
