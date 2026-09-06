@@ -65,11 +65,22 @@ export function ControlPanel() {
             type="button"
             role="switch"
             aria-checked={liveEnabled}
+            aria-label="Toggle live analysis"
             onClick={() => setLiveEnabled(!liveEnabled)}
-            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${liveEnabled ? 'bg-emerald-500' : 'bg-gray-300'}`}
+            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 ${
+              liveEnabled ? 'bg-emerald-500' : 'bg-gray-300'
+            }`}
           >
+            {/* Positioned with an explicit left rather than a translate. The
+                knob previously had no left at all, so it sat at its static
+                position - centred, because it lives in a button - and the
+                translate pushed it clear of the pill, which read as a bite out
+                of the right-hand side. Animating left keeps the offset a single
+                unambiguous number instead of depending on transform variables. */}
             <span
-              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${liveEnabled ? 'translate-x-4' : 'translate-x-0.5'}`}
+              aria-hidden="true"
+              style={{ left: liveEnabled ? 18 : 2 }}
+              className="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-[left] duration-200 ease-out"
             />
           </button>
         </div>
