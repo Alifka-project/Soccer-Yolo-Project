@@ -1,7 +1,7 @@
 'use client'
 
 import { useDerivedAnalytics } from '@/lib/use-derived-analytics'
-import { fmt, rgbaFromHex } from '@/lib/analytics'
+import { fmt, rgbaFromHex, teamLabel } from '@/lib/analytics'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { TeamLegend, TeamSwatchCard } from '@/components/team-legend'
@@ -108,7 +108,7 @@ export function SoccerAnalytics() {
                 <span className="text-sm font-medium text-green-800">Current Possession</span>
               </div>
               <div className="text-xs text-green-600 mt-1">
-                Player {possession.current_possession.player_id} ({possession.current_possession.team === 'team_a' ? derived.teamLabels.team_a : possession.current_possession.team === 'team_b' ? derived.teamLabels.team_b : possession.current_possession.team})
+                Player {possession.current_possession.player_id} ({teamLabel(possession.current_possession.team, derived.teamLabels)})
               </div>
             </div>
           )}

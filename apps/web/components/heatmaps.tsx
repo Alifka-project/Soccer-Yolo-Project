@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useDerivedAnalytics } from '@/lib/use-derived-analytics'
-import { fmt, rgbTuple } from '@/lib/analytics'
+import { fmt, rgbTuple, teamLabel } from '@/lib/analytics'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
@@ -137,11 +137,7 @@ export function Heatmaps() {
         <div className="space-y-3">
           {derived.heatmaps.teams.map((teamHeatmap) => {
             const color = teamHeatmap.team === 'team_b' ? colorB : teamHeatmap.team === 'team_a' ? colorA : '#6B7280'
-            const label = teamHeatmap.team === 'team_a'
-              ? derived.teamLabels.team_a
-              : teamHeatmap.team === 'team_b'
-                ? derived.teamLabels.team_b
-                : teamHeatmap.team
+            const label = teamLabel(teamHeatmap.team, derived.teamLabels)
             return (
               <Card key={teamHeatmap.team} className="border-l-4" style={{ borderLeftColor: color }}>
                 <CardHeader className="pb-2">
@@ -179,7 +175,7 @@ export function Heatmaps() {
                     <div>Time {fmt(heatmap.timeOnField, 0)}s</div>
                     <div className="flex items-center gap-1">
                       <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
-                      {heatmap.team === 'team_a' ? derived.teamLabels.team_a : heatmap.team === 'team_b' ? derived.teamLabels.team_b : heatmap.team}
+                      {teamLabel(heatmap.team, derived.teamLabels)}
                     </div>
                   </div>
                   <HeatmapGrid positions={heatmap.points} color={rgbTuple(color)} extent={extent} />

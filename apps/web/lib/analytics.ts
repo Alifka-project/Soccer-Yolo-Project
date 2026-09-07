@@ -460,7 +460,11 @@ function buildPitchScale(tracks: NormalizedTrack[]): PitchScale {
   tracks.forEach((track) => {
     if (!isPerson(track)) return
     track.positions.forEach((pos) => {
-      if (pos.h > 4) samples.push({ y: pos.y + pos.h, h: pos.h })
+      // Fitted on box-centre rows because that is where every consumer
+      // evaluates it. Fitting on foot rows and reading at centres made
+      // heightAt return h*(1 - slope/2), inflating every metre figure by
+      // 1/(1 - slope/2) - about 20% on a gentle angle, over 40% on a steep one.
+      if (pos.h > 4) samples.push({ y: pos.y + pos.h / 2, h: pos.h })
     })
   })
 
@@ -485,10 +489,18 @@ function buildPitchScale(tracks: NormalizedTrack[]): PitchScale {
     if (den > 1) {
       const a = num / den
       const b = meanH - a * meanY
-      const ySpread = Math.max(...samples.map((s) => s.y)) - Math.min(...samples.map((s) => s.y))
+      // Single pass: spreading one argument per tracked position overflows the
+      // call stack on a full batch summary.
+      let minY = Infinity
+      let maxY = -Infinity
+      for (const sample of samples) {
+        if (sample.y < minY) minY = sample.y
+        if (sample.y > maxY) maxY = sample.y
+      }
+      const ySpread = maxY - minY
       // Only trust the fit when players were actually seen at different depths
       // and it stays positive across the observed range.
-      if (a > 0 && ySpread > 40 && b + a * Math.min(...samples.map((s) => s.y)) > 3) {
+      if (a > 0 && ySpread > 40 && b + a * minY > 3) {
         slope = a
         intercept = b
         calibrated = true
@@ -539,12 +551,24 @@ function playerMetrics(tracks: NormalizedTrack[], fps: number, scale: PitchScale
       let sprints = 0
       let inSprint = false
       let fastStreak = 0
+      // Summed from the steps actually accepted, so replayed footage cannot
+      // report more distance than the time it was observed over.
+      let elapsed = 0
       for (let i = 1; i < track.positions.length; i++) {
         const prev = center(track.positions[i - 1])
         const curr = center(track.positions[i])
+        const frameDelta = track.positions[i].frame - track.positions[i - 1].frame
+        // Seeking or replaying rewinds the frame id, so the sequence is not
+        // monotonic. Flooring a negative delta divided real displacement by a
+        // single frame and reported it as speed.
+        if (frameDelta <= 0) {
+          inSprint = false
+          fastStreak = 0
+          continue
+        }
         const step = dist(prev, curr)
         const stepMetres = scale.distance(prev, curr)
-        const dt = Math.max((track.positions[i].frame - track.positions[i - 1].frame) / safeFps, 1 / safeFps)
+        const dt = frameDelta / safeFps
         const speedMetres = stepMetres / dt
 
         if (!Number.isFinite(speedMetres) || speedMetres > MAX_HUMAN_MS) {
@@ -555,6 +579,7 @@ function playerMetrics(tracks: NormalizedTrack[], fps: number, scale: PitchScale
 
         distance += step
         distanceMetres += stepMetres
+        elapsed += dt
         const speed = step / dt
         maxSpeed = Math.max(maxSpeed, speed)
         maxSpeedMetres = Math.max(maxSpeedMetres, speedMetres)
@@ -568,9 +593,8 @@ function playerMetrics(tracks: NormalizedTrack[], fps: number, scale: PitchScale
         fastStreak = sprinting ? fastStreak + 1 : 0
         if (!sprinting) inSprint = false
       }
-      const first = track.positions[0]
       const last = track.positions[track.positions.length - 1]
-      const timeOnField = Math.max((last.frame - first.frame) / safeFps, track.positions.length / safeFps)
+      const timeOnField = elapsed
       return {
         id: track.id,
         team: track.team,
@@ -1168,7 +1192,10 @@ export function deriveAnalytics(
         y: center(pos).y,
         intensity: pos.score || 1,
       })),
-      timeOnField: Math.max(track.positions.length / Math.max(fps, 1), 0),
+      timeOnField: Math.max(
+        (track.positions[track.positions.length - 1].frame - track.positions[0].frame) / Math.max(fps, 1),
+        0,
+      ),
     }))
 
   const teamPoints = new Map<TeamId, Array<{ x: number; y: number; intensity: number }>>()
@@ -1392,6 +1419,21 @@ export function mergeRealtimeTracks(
     })
   })
   return enrichTrackMap(pruneStaleTracks(next, frameId))
+}
+
+/**
+ * Display name for a team id. Referees, keepers and ambiguous shirts are
+ * deliberately left unassigned by the classifier, and the raw id was reaching
+ * the screen in the slot where a team name goes.
+ */
+export function teamLabel(
+  team: string,
+  labels: { team_a: string; team_b: string },
+) {
+  if (team === 'team_a') return labels.team_a
+  if (team === 'team_b') return labels.team_b
+  if (team === 'ball') return 'Ball'
+  return 'Unassigned'
 }
 
 export function fmt(value?: number | null, digits = 1) {

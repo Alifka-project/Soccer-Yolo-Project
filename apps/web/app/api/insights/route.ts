@@ -30,7 +30,7 @@ const SYSTEM_PROMPT =
   + 'Use the jersey colour names in the team labels. Never invent events that are not in the numbers — no shots, goals or named players. '
   + 'If a formation is given as "not yet established", say the shape is still unclear rather than inventing one. '
   + 'If possessionSource is "proximity", note that possession is estimated from play location rather than a tracked ball. '
-  + 'Field meanings, do not reinterpret them: totalTrackedControlSeconds is the total time the ball was under tracked control, not an average spell length; '
+  + 'Field meanings, do not reinterpret them: passesAttempted counts every attempt and passesCompleted only those that reached a team-mate, so never describe attempts as completions; totalTrackedControlSeconds is the total time the ball was under tracked control, not an average spell length; '
   + 'modelWinProbabilityPct* is this system\'s win-probability estimate, not duels or 50/50s won; attackingThird* is the share of that team\'s players in the attacking third. '
   + 'Keep it under 180 words with short sections: Shape, Possession, Workload.'
 
@@ -59,8 +59,8 @@ function localBriefing(summary: any) {
   const shape = `Shape: ${teamA} lines up ${summary.formationA || 'not yet established'}; ${teamB} lines up ${summary.formationB || 'not yet established'}. Attacking-third occupancy is ${summary.attackingThirdA ?? 0}% versus ${summary.attackingThirdB ?? 0}%, and ${summary.players ?? 0} players are being tracked.`
 
   const possession = leader
-    ? `Possession: ${leader} is on top with ${Math.max(possA, possB)}% against ${Math.min(possA, possB)}%, a ${margin}-point edge across ${summary.totalTrackedControlSeconds ?? 0}s of tracked control. ${summary.passesCompleted ?? 0} passes completed (${teamA} ${summary.passesCompletedByTeamA ?? 0}, ${teamB} ${summary.passesCompletedByTeamB ?? 0}) with ${summary.turnovers ?? 0} turnovers. ${provenance}`
-    : `Possession: the two sides are level so far across ${summary.totalTrackedControlSeconds ?? 0}s of tracked control, with ${summary.passesCompleted ?? 0} passes and ${summary.turnovers ?? 0} turnovers. ${provenance}`
+    ? `Possession: ${leader} is on top with ${Math.max(possA, possB)}% against ${Math.min(possA, possB)}%, a ${margin}-point edge across ${summary.totalTrackedControlSeconds ?? 0}s of tracked control. ${summary.passesCompleted ?? 0} of ${summary.passesAttempted ?? 0} passes completed (${teamA} ${summary.passesAttemptedByTeamA ?? 0} attempted, ${teamB} ${summary.passesAttemptedByTeamB ?? 0} attempted) with ${summary.turnovers ?? 0} turnovers. ${provenance}`
+    : `Possession: the two sides are level so far across ${summary.totalTrackedControlSeconds ?? 0}s of tracked control, with ${summary.passesCompleted ?? 0} of ${summary.passesAttempted ?? 0} passes completed and ${summary.turnovers ?? 0} turnovers. ${provenance}`
 
   const runners = (summary.topDistance || [])
     .slice(0, 3)

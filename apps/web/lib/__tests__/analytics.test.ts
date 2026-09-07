@@ -558,6 +558,71 @@ console.log('\n[plausibility]')
   )
 }
 
+// ------------------------------------------- audit regressions
+console.log('\n[audit fixes]')
+{
+  // Replaying a clip rewinds the frame ids. Distance used to keep accumulating
+  // while elapsed time stayed pinned to the media-time span.
+  const map = new Map<string, any>()
+  const pass1 = Array.from({ length: 40 }, (_, f) => ({ frame: f * 3, x: 300 + f * 4, y: 500, w: 40, h: 100, score: 0.9 }))
+  const pass2 = Array.from({ length: 40 }, (_, f) => ({ frame: f * 3, x: 300 + f * 4, y: 500, w: 40, h: 100, score: 0.9 }))
+  map.set('1', { id: '1', class: 'person', team: 'team_a', color: '#E11D48', positions: [...pass1, ...pass2] })
+  for (let i = 0; i < 5; i++) {
+    map.set(String(20 + i), {
+      id: String(20 + i), class: 'person', team: i % 2 ? 'team_b' : 'team_a', color: i % 2 ? '#2563EB' : '#E11D48',
+      positions: Array.from({ length: 40 }, (_, f) => ({ frame: f * 3, x: 200 + i * 200 + f * 3, y: 250 + i * 80, w: 40, h: 55 + i * 20, score: 0.9 })),
+    })
+  }
+  const d = deriveAnalytics(map, { frame_id: 117, resolution: [1280, 720] }, 30)
+  const replayed = d.players.find((p) => p.id === '1')!
+  check('replayed footage does not inflate average speed', replayed.avgSpeedM <= 12, `${replayed.avgSpeedM.toFixed(2)} m/s`)
+  check('elapsed time is never zero while distance accrues',
+    replayed.distanceM === 0 || replayed.timeOnField > 0, `${replayed.timeOnField.toFixed(1)}s / ${replayed.distanceM.toFixed(1)}m`)
+  // Replaying observes the player a second time, so distance and elapsed time
+  // both grow. What must not change is the speed derived from them - that is
+  // the invariant the old frame-span formula broke.
+  const single = new Map<string, any>(map)
+  single.set('1', { ...map.get('1'), positions: pass1 })
+  const solo = deriveAnalytics(single, { frame_id: 117, resolution: [1280, 720] }, 30).players.find((p) => p.id === '1')!
+  check(
+    'replaying a clip leaves average speed unchanged',
+    Math.abs(replayed.avgSpeedM - solo.avgSpeedM) < 0.05,
+    `replayed ${replayed.avgSpeedM.toFixed(2)} vs single ${solo.avgSpeedM.toFixed(2)} m/s`,
+  )
+  check(
+    'elapsed time grows with the footage actually observed',
+    replayed.timeOnField > solo.timeOnField * 1.5,
+    `${replayed.timeOnField.toFixed(2)}s vs ${solo.timeOnField.toFixed(2)}s`,
+  )
+}
+{
+  // buildPitchScale used to spread one argument per position into Math.min/max.
+  const map = new Map<string, any>()
+  for (let i = 0; i < 6; i++) {
+    map.set(String(i), {
+      id: String(i), class: 'person', team: i % 2 ? 'team_b' : 'team_a', color: i % 2 ? '#2563EB' : '#E11D48',
+      positions: Array.from({ length: 30000 }, (_, f) => ({ frame: f, x: 200 + (f % 700), y: 200 + i * 70, w: 40, h: 60 + i * 15, score: 0.9 })),
+    })
+  }
+  let threw = ''
+  try { deriveAnalytics(map, { frame_id: 29999, resolution: [1280, 720] }, 30) }
+  catch (err) { threw = (err as Error).message }
+  check('180k tracked positions do not overflow the stack', threw === '', threw)
+}
+{
+  // Pass distance is stored in metres; the view used to scale it a second time.
+  const map = new Map<string, any>()
+  const still = (x: number) => Array.from({ length: 60 }, (_, f) => ({ frame: f, x, y: 400, w: 40, h: 90, score: 0.9 }))
+  map.set('1', { id: '1', class: 'person', team: 'team_a', color: '#E11D48', positions: still(200) })
+  map.set('2', { id: '2', class: 'person', team: 'team_a', color: '#E11D48', positions: still(700) })
+  map.set('3', { id: '3', class: 'person', team: 'team_b', color: '#2563EB', positions: still(760) })
+  map.set('ball', { id: 'ball', class: 'ball', team: 'ball', color: '#F8FAFC',
+    positions: Array.from({ length: 60 }, (_, f) => ({ frame: f, x: f < 30 ? 215 : 715, y: 430, w: 14, h: 14, score: 0.5 })) })
+  const d = deriveAnalytics(map, { frame_id: 59, resolution: [1280, 720] }, 30)
+  const p = d.passes.recent_passes[0]
+  check('a pass across the pitch is metres, not centimetres', !p || p.distance >= 3, p ? `${p.distance.toFixed(1)} m` : 'no pass')
+}
+
 // --------------------------------------------------- win probability model
 console.log('\n[win probability]')
 {

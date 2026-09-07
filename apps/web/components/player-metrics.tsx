@@ -1,7 +1,7 @@
 'use client'
 
 import { useDerivedAnalytics } from '@/lib/use-derived-analytics'
-import { fmt, rgbaFromHex } from '@/lib/analytics'
+import { fmt, rgbaFromHex, teamLabel } from '@/lib/analytics'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
@@ -53,11 +53,7 @@ export function PlayerMetrics() {
       <div className="space-y-3 max-h-96 overflow-y-auto">
         {derived.players.map((player) => {
           const color = player.color || (player.team === 'team_b' ? derived.teamColors.team_b : derived.teamColors.team_a)
-          const label = player.team === 'team_a'
-            ? derived.teamLabels.team_a
-            : player.team === 'team_b'
-              ? derived.teamLabels.team_b
-              : player.team
+          const label = teamLabel(player.team, derived.teamLabels)
           return (
             <Card key={player.id} className="border-l-4" style={{ borderLeftColor: color }}>
               <CardHeader className="pb-2">

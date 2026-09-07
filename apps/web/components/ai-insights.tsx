@@ -45,9 +45,13 @@ function compactSummary(derived: DerivedAnalytics) {
     // Named explicitly: a bare "possessionSeconds" was read back as an average
     // per-spell duration, and a bare "winA" as duels won.
     totalTrackedControlSeconds: Number(derived.possession.total_possession_time.toFixed(1)),
-    passesCompleted: derived.passes.total_passes,
-    passesCompletedByTeamA: derived.passes.team_a_passes,
-    passesCompletedByTeamB: derived.passes.team_b_passes,
+    // total_passes is attempts. Sending it as "completed" told the model every
+    // pass found its man.
+    passesAttempted: derived.passes.total_passes,
+    passesCompleted: derived.passes.successful_passes,
+    passSuccessRatePct: Number(derived.passes.pass_success_rate.toFixed(1)),
+    passesAttemptedByTeamA: derived.passes.team_a_passes,
+    passesAttemptedByTeamB: derived.passes.team_b_passes,
     formationA: formationOrUnknown(derived.team.teamA.name),
     formationB: formationOrUnknown(derived.team.teamB.name),
     sprints: derived.extras.sprints,
@@ -75,7 +79,7 @@ function compactSummary(derived: DerivedAnalytics) {
 function coarseKey(summary: ReturnType<typeof compactSummary>) {
   return [
     Math.round(summary.possessionPctA / 5),
-    Math.round(summary.passesCompleted / 5),
+    Math.round(summary.passesAttempted / 5),
     Math.round(summary.sprints / 3),
     Math.round(summary.players / 4),
     summary.ballDetected,

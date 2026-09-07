@@ -72,11 +72,11 @@ export function PassNetwork() {
           <div className="grid grid-cols-2 gap-4">
             <Card className="border-l-4 border-l-green-500">
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Total Passes</CardTitle>
+                <CardTitle className="text-sm">Attempted</CardTitle>
               </CardHeader>
               <CardContent className="pt-0">
                 <div className="text-2xl font-bold text-green-600 tabular-nums">{network.total_passes}</div>
-                <div className="text-xs text-gray-500">{network.successful_passes} successful</div>
+                <div className="text-xs text-gray-500">{network.successful_passes} completed</div>
               </CardContent>
             </Card>
             <Card className="border-l-4 border-l-blue-500">
@@ -116,7 +116,7 @@ export function PassNetwork() {
                         <span>P{pass.from_player} → P{pass.to_player}</span>
                         <div className="flex items-center gap-2">
                           <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
-                          <span className="text-gray-500 tabular-nums">{fmt(pass.distance * derived.extras.metersPerPixel, 0)} m</span>
+                          <span className="text-gray-500 tabular-nums">{fmt(pass.distance, 0)} m</span>
                           <Badge variant={pass.successful ? 'default' : 'destructive'} className="text-xs">
                             {pass.successful ? '✓' : '✗'}
                           </Badge>
