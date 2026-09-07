@@ -14,12 +14,29 @@ export function VideoUpload() {
     }
   }, [uploadVideo])
 
+  // No size cap: the clip is never uploaded anywhere, it is read straight from
+  // disk into a blob URL, so a full-match recording is fine. The old 500MB
+  // limit rejected real footage with barely a word about why.
   const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({
     onDrop,
-    accept: { 'video/*': ['.mp4', '.avi', '.mov'] },
+    accept: {
+      'video/*': ['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv', '.mpg', '.mpeg', '.ogv'],
+    },
     maxFiles: 1,
-    maxSize: 500 * 1024 * 1024,
   })
+
+  // Say exactly why a file bounced. Only "too large" was ever reported, so a
+  // file rejected for its type looked like nothing had happened at all.
+  const rejection = fileRejections[0]
+  const rejectionMessage = rejection
+    ? rejection.errors.map((error) => {
+        if (error.code === 'file-invalid-type') {
+          return `${rejection.file.name} is not a video this browser will open. Try an MP4 (H.264).`
+        }
+        if (error.code === 'too-many-files') return 'Drop one clip at a time.'
+        return error.message
+      })[0]
+    : ''
 
   return (
     <div className="space-y-2">
@@ -71,16 +88,16 @@ export function VideoUpload() {
               {isDragActive ? 'Drop video here' : 'Drag & drop video or click to browse'}
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              MP4, MOV, WebM • analysed in your browser, nothing is uploaded
+              MP4, MOV, WebM, MKV • any size • analysed in your browser, nothing is uploaded
             </p>
-            {fileRejections.length > 0 && (
-              <p className="text-xs text-red-500 mt-1">
-                File too large. Maximum size is 500MB.
-              </p>
-            )}
+
           </>
         )}
       </div>
+
+      {rejectionMessage && (
+        <p className="rounded bg-red-50 p-2 text-xs text-red-700">{rejectionMessage}</p>
+      )}
     </div>
   )
 }

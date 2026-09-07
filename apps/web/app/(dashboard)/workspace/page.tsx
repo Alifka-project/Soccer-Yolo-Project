@@ -34,13 +34,13 @@ export default function WorkspacePage() {
       
       <div className="flex-1 flex overflow-hidden">
         {/* Left Panel */}
-        <div className="w-80 border-r p-4 space-y-4 overflow-y-auto">
+        <div className="w-80 shrink-0 border-r p-4 space-y-4 overflow-y-auto">
           <VideoUpload />
           <ControlPanel />
         </div>
 
         {/* Center - Video Player */}
-        <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex flex-col min-w-0">
           <div className="flex-1 relative bg-black">
             <VideoPlayer />
           </div>
@@ -48,7 +48,7 @@ export default function WorkspacePage() {
         </div>
 
         {/* Right Panel - Analysis */}
-        <div className="w-96 border-l bg-white flex flex-col">
+        <div className="w-96 shrink-0 border-l bg-white flex flex-col">
           <AnalysisTabs />
         </div>
       </div>

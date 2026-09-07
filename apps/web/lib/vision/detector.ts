@@ -83,16 +83,35 @@ export class LiveDetector {
 
   private async doLoad() {
     const tf = await import('@tensorflow/tfjs-core')
-    await import('@tensorflow/tfjs-backend-webgl')
+    // Both backends are registered. WebGL does the inference, but parts of the
+    // detector's post-processing are not implemented there and fall through to
+    // CPU; without it registered every frame threw "Backend name 'cpu' not
+    // found in registry" as an unhandled rejection.
+    await Promise.all([
+      import('@tensorflow/tfjs-backend-webgl'),
+      import('@tensorflow/tfjs-backend-cpu'),
+    ])
     try {
       await tf.setBackend('webgl')
     } catch {
-      // Falls back to whatever backend registered successfully (usually CPU).
+      await tf.setBackend('cpu').catch(() => {
+        // Leaves whichever backend registered successfully.
+      })
     }
     await tf.ready()
     this.backend = tf.getBackend()
     const cocoSsd = await import('@tensorflow-models/coco-ssd')
-    this.model = (await cocoSsd.load({ base: TILE_LAYOUT[this.quality].base })) as unknown as CocoModel
+    const base = TILE_LAYOUT[this.quality].base
+    // Weights are served from the app itself. Fetching them from a public CDN
+    // at load time meant the whole dashboard failed whenever that request was
+    // blocked or slow - the worst possible moment being a live demo.
+    const localUrl = `/models/${base === 'lite_mobilenet_v2' ? 'ssdlite_mobilenet_v2' : 'ssd_mobilenet_v2'}/model.json`
+    try {
+      this.model = (await cocoSsd.load({ base, modelUrl: localUrl })) as unknown as CocoModel
+    } catch {
+      // Falls back to the hosted copy when the bundled weights are absent.
+      this.model = (await cocoSsd.load({ base })) as unknown as CocoModel
+    }
     this.error = ''
   }
 

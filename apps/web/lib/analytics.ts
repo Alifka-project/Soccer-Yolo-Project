@@ -191,6 +191,12 @@ export interface DerivedAnalytics {
     winFactors: WinFactor[]
   }
   heatmaps: {
+    /**
+     * Shared coordinate frame for every heatmap, in source-video pixels.
+     * Without one, each grid rescales to its own points and a player who barely
+     * moved fills the pitch exactly like one who covered it.
+     */
+    extent: { minX: number; minY: number; maxX: number; maxY: number }
     players: Array<{
       id: string
       team: TeamId
@@ -516,7 +522,13 @@ function buildPitchScale(tracks: NormalizedTrack[]): PitchScale {
 function playerMetrics(tracks: NormalizedTrack[], fps: number, scale: PitchScale): PlayerMetric[] {
   const safeFps = Math.max(fps, 1)
   const SPRINT_MS = 7
-  const IMPLAUSIBLE_MS = 14
+  // No human runs faster than this. A step implying more is the tracker having
+  // swapped identities or jumped, not a player moving: it is discarded rather
+  // than clamped, because a teleport is not distance covered either. The old
+  // guard was a pixel threshold, which cannot catch this - the same pixel jump
+  // converts to a far larger distance near the top of frame, where players are
+  // small and each pixel spans more turf.
+  const MAX_HUMAN_MS = 12
   return tracks
     .filter((track) => isPerson(track) && track.positions.length >= 2)
     .map((track) => {
@@ -531,20 +543,22 @@ function playerMetrics(tracks: NormalizedTrack[], fps: number, scale: PitchScale
         const prev = center(track.positions[i - 1])
         const curr = center(track.positions[i])
         const step = dist(prev, curr)
-        if (step > 180) {
+        const stepMetres = scale.distance(prev, curr)
+        const dt = Math.max((track.positions[i].frame - track.positions[i - 1].frame) / safeFps, 1 / safeFps)
+        const speedMetres = stepMetres / dt
+
+        if (!Number.isFinite(speedMetres) || speedMetres > MAX_HUMAN_MS) {
           inSprint = false
+          fastStreak = 0
           continue
         }
+
         distance += step
-        // Converted per step, at the depth the step happened.
-        const stepMetres = scale.distance(prev, curr)
         distanceMetres += stepMetres
-        const dt = Math.max((track.positions[i].frame - track.positions[i - 1].frame) / safeFps, 1 / safeFps)
         const speed = step / dt
-        const speedMetres = stepMetres / dt
         maxSpeed = Math.max(maxSpeed, speed)
         maxSpeedMetres = Math.max(maxSpeedMetres, speedMetres)
-        const sprinting = speedMetres > SPRINT_MS && speedMetres < IMPLAUSIBLE_MS
+        const sprinting = speedMetres > SPRINT_MS
         // Two consecutive fast samples: a single one is usually a detector
         // wobble or an identity swap, not a player accelerating away.
         if (sprinting && fastStreak === 1 && !inSprint) {
@@ -589,7 +603,9 @@ function latestPositions(tracks: NormalizedTrack[]) {
 
 function formationName(players: Array<{ x: number }>, defendLowX: boolean) {
   if (players.length === 0) return '—'
-  if (players.length < 5) return `${players.length} players`
+  // Too few tracked to read a shape. Returning "4 players" here put that string
+  // in the slot where a formation like 4-4-2 is displayed, which read as a bug.
+  if (players.length < 5) return 'shape unclear'
   const xs = players.map((player) => player.x)
   const minX = Math.min(...xs)
   const maxX = Math.max(...xs)
@@ -1162,6 +1178,26 @@ export function deriveAnalytics(
     teamPoints.set(player.team, list)
   })
 
+  // Prefer the real frame size; fall back to the span the tracks actually
+  // cover, so every grid is drawn against the same reference.
+  const heatmapExtent = (() => {
+    if (resolution) return { minX: 0, minY: 0, maxX: resolution[0], maxY: resolution[1] }
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    heatmapPlayers.forEach((player) => {
+      player.points.forEach((point) => {
+        if (point.x < minX) minX = point.x
+        if (point.x > maxX) maxX = point.x
+        if (point.y < minY) minY = point.y
+        if (point.y > maxY) maxY = point.y
+      })
+    })
+    if (!Number.isFinite(minX)) return { minX: 0, minY: 0, maxX: 1280, maxY: 720 }
+    return { minX, minY, maxX, maxY }
+  })()
+
   const colorsFromTracks = {
     team_a: labeled.find((track) => track.team === 'team_a' && track.color)?.color
       || analyticsData?.team_colors?.team_a
@@ -1273,6 +1309,7 @@ export function deriveAnalytics(
       winFactors: win.factors,
     },
     heatmaps: {
+      extent: heatmapExtent,
       players: heatmapPlayers,
       teams: Array.from(teamPoints.entries()).map(([teamId, points]) => ({ team: teamId, points })),
     },

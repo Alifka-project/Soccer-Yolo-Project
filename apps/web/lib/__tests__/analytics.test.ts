@@ -439,6 +439,125 @@ console.log('\n[perspective]')
   )
 }
 
+// ------------------------------------------------------------- heatmaps
+console.log('\n[heatmaps]')
+{
+  // One player pacing a tiny patch. Normalised to its own extent this filled
+  // the whole grid, reading as if the player had covered the pitch.
+  const map = new Map<string, any>()
+  const still = Array.from({ length: 60 }, (_, f) => ({
+    frame: f, x: 600 + (f % 3), y: 400 + (f % 2), w: 40, h: 90, score: 0.9,
+  }))
+  map.set('1', { id: '1', class: 'person', team: 'team_a', color: '#E11D48', positions: still })
+  for (let i = 0; i < 4; i++) {
+    map.set(String(10 + i), {
+      id: String(10 + i), class: 'person', team: i % 2 ? 'team_b' : 'team_a',
+      color: i % 2 ? '#2563EB' : '#E11D48',
+      positions: Array.from({ length: 60 }, (_, f) => ({
+        frame: f, x: 80 + i * 40 + f * 18, y: 150 + i * 60 + f * 6, w: 40, h: 90, score: 0.9,
+      })),
+    })
+  }
+  const derived = deriveAnalytics(map, { frame_id: 59, resolution: [1280, 720] }, 30)
+  const extent = derived.heatmaps.extent
+  check('extent comes from the frame, not the points', extent.maxX === 1280 && extent.maxY === 720, JSON.stringify(extent))
+  check('extent starts at the frame origin', extent.minX === 0 && extent.minY === 0, JSON.stringify(extent))
+
+  // Bin the stationary player the way the grid does, and confirm he lands in
+  // one or two cells rather than spread across the whole thing.
+  const COLS = 12, ROWS = 8
+  const pacer = derived.heatmaps.players.find((p) => p.id === '1')!
+  const cells = new Set<number>()
+  for (const point of pacer.points) {
+    const col = Math.min(COLS - 1, Math.floor(((point.x - extent.minX) / (extent.maxX - extent.minX)) * COLS))
+    const row = Math.min(ROWS - 1, Math.floor(((point.y - extent.minY) / (extent.maxY - extent.minY)) * ROWS))
+    cells.add(row * COLS + col)
+  }
+  check('a stationary player occupies very few cells', cells.size <= 2, `${cells.size} of ${COLS * ROWS}`)
+
+  const mover = derived.heatmaps.players.find((p) => p.id === '10')!
+  const moverCells = new Set<number>()
+  for (const point of mover.points) {
+    const col = Math.min(COLS - 1, Math.floor(((point.x - extent.minX) / (extent.maxX - extent.minX)) * COLS))
+    const row = Math.min(ROWS - 1, Math.floor(((point.y - extent.minY) / (extent.maxY - extent.minY)) * ROWS))
+    moverCells.add(row * COLS + col)
+  }
+  check('a player who ranges covers more cells than one who does not', moverCells.size > cells.size, `${moverCells.size} vs ${cells.size}`)
+  // A box centred on the touchline can sit a few pixels outside the frame, so
+  // the grid must clamp rather than assume every point is in range.
+  const bin = (pt: { x: number; y: number }) => {
+    const col = Math.min(COLS - 1, Math.max(0, Math.floor(((pt.x - extent.minX) / (extent.maxX - extent.minX)) * COLS)))
+    const row = Math.min(ROWS - 1, Math.max(0, Math.floor(((pt.y - extent.minY) / (extent.maxY - extent.minY)) * ROWS)))
+    return row * COLS + col
+  }
+  const allPoints = derived.heatmaps.players.flatMap((p) => p.points)
+  check(
+    'every point bins to a valid cell, including ones off the frame edge',
+    allPoints.every((pt) => { const i = bin(pt); return Number.isInteger(i) && i >= 0 && i < COLS * ROWS }),
+    '',
+  )
+}
+
+// ------------------------------------------------ physical plausibility
+console.log('\n[plausibility]')
+{
+  // A track that teleports mid-clip, as happens when the tracker swaps two
+  // players. The jump must not become distance covered or a peak speed.
+  const map = new Map<string, any>()
+  const positions = []
+  for (let f = 0; f < 60; f++) {
+    // Walks slowly, then jumps the width of the pitch at frame 30.
+    const x = f < 30 ? 300 + f * 2 : 1100 + (f - 30) * 2
+    positions.push({ frame: f, x, y: 500, w: 40, h: 100, score: 0.9 })
+  }
+  map.set('1', { id: '1', class: 'person', team: 'team_a', color: '#E11D48', positions })
+  for (let i = 0; i < 5; i++) {
+    map.set(String(20 + i), {
+      id: String(20 + i), class: 'person', team: i % 2 ? 'team_b' : 'team_a',
+      color: i % 2 ? '#2563EB' : '#E11D48',
+      positions: Array.from({ length: 60 }, (_, f) => ({
+        frame: f, x: 200 + i * 180 + f, y: 300 + i * 70, w: 40, h: 60 + i * 18, score: 0.9,
+      })),
+    })
+  }
+  const derived = deriveAnalytics(map, { frame_id: 59, resolution: [1280, 720] }, 30)
+  const jumper = derived.players.find((p) => p.id === '1')!
+
+  check('peak speed stays humanly possible', jumper.maxSpeedM <= 12, `${jumper.maxSpeedM.toFixed(1)} m/s`)
+  check('the teleport is not counted as distance', jumper.distanceM < 60, `${jumper.distanceM.toFixed(1)} m`)
+  check(
+    'average speed is plausible for a footballer',
+    jumper.avgSpeedM >= 0 && jumper.avgSpeedM <= 12,
+    `${jumper.avgSpeedM.toFixed(1)} m/s`,
+  )
+  check(
+    'no player reports an impossible peak',
+    derived.players.every((p) => p.maxSpeedM <= 12 && Number.isFinite(p.maxSpeedM)),
+    derived.players.map((p) => p.maxSpeedM.toFixed(1)).join(','),
+  )
+  check(
+    'every distance is finite and non-negative',
+    derived.players.every((p) => Number.isFinite(p.distanceM) && p.distanceM >= 0),
+    '',
+  )
+}
+{
+  // Fewer than five tracked players cannot yield a formation.
+  const map = new Map<string, any>()
+  for (let i = 0; i < 3; i++) {
+    map.set(String(i), {
+      id: String(i), class: 'person', team: 'team_a', color: '#E11D48',
+      positions: Array.from({ length: 30 }, (_, f) => ({ frame: f, x: 300 + i * 100, y: 400, w: 40, h: 90, score: 0.9 })),
+    })
+  }
+  const derived = deriveAnalytics(map, { frame_id: 29, resolution: [1280, 720] }, 30)
+  check(
+    'a formation is never faked from too few players',
+    !/^\d+ players$/.test(derived.team.teamA.name),
+    derived.team.teamA.name,
+  )
+}
+
 // --------------------------------------------------- win probability model
 console.log('\n[win probability]')
 {

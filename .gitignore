@@ -61,3 +61,6 @@ apps/web/public/__*.mov
 .idea/
 *.swp
 *.swo
+
+# Detector weights (fetch with: npm run fetch:models)
+apps/web/public/models/

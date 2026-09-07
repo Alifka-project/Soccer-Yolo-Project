@@ -11,43 +11,54 @@ import { TeamLegend } from '@/components/team-legend'
 function HeatmapGrid({
   positions,
   color,
+  extent,
   height = 'h-16',
 }: {
   positions: Array<{ x: number; y: number }>
   color: string
+  /** Shared coordinate frame, so every grid is comparable with every other. */
+  extent: { minX: number; minY: number; maxX: number; maxY: number }
   height?: string
 }) {
   const COLS = 12
   const ROWS = 8
-  const xs = positions.map((p) => p.x)
-  const ys = positions.map((p) => p.y)
-  const minX = xs.length ? Math.min(...xs) : 0
-  const maxX = xs.length ? Math.max(...xs) : 1
-  const minY = ys.length ? Math.min(...ys) : 0
-  const maxY = ys.length ? Math.max(...ys) : 1
-  const rangeX = Math.max(maxX - minX, 1)
-  const rangeY = Math.max(maxY - minY, 1)
+  const rangeX = Math.max(extent.maxX - extent.minX, 1)
+  const rangeY = Math.max(extent.maxY - extent.minY, 1)
   const grid = new Array(COLS * ROWS).fill(0)
 
-  positions.forEach((p) => {
-    const col = Math.min(COLS - 1, Math.floor(((p.x - minX) / rangeX) * COLS))
-    const row = Math.min(ROWS - 1, Math.floor(((p.y - minY) / rangeY) * ROWS))
-    grid[row * COLS + col]++
-  })
-  const maxCount = Math.max(1, ...grid)
+  // Counted in a single pass. Math.min(...points) would spread tens of
+  // thousands of arguments once a clip has been running a while, which
+  // overflows the call stack.
+  let occupied = 0
+  for (const point of positions) {
+    const col = Math.min(COLS - 1, Math.max(0, Math.floor(((point.x - extent.minX) / rangeX) * COLS)))
+    const row = Math.min(ROWS - 1, Math.max(0, Math.floor(((point.y - extent.minY) / rangeY) * ROWS)))
+    const index = row * COLS + col
+    if (grid[index] === 0) occupied++
+    grid[index]++
+  }
+
+  let maxCount = 1
+  for (const count of grid) if (count > maxCount) maxCount = count
 
   return (
-    <div className={`grid grid-cols-12 gap-0.5 ${height} bg-emerald-950/10 rounded p-1`}>
-      {grid.map((count, i) => {
-        const opacity = count > 0 ? (count / maxCount) * 0.85 + 0.15 : 0.04
-        return (
-          <div
-            key={i}
-            className="rounded-sm"
-            style={{ backgroundColor: `rgba(${color}, ${opacity})` }}
-          />
-        )
-      })}
+    <div>
+      <div className={`grid grid-cols-12 gap-0.5 ${height} bg-emerald-950/10 rounded p-1`}>
+        {grid.map((count, i) => {
+          const opacity = count > 0 ? (count / maxCount) * 0.85 + 0.15 : 0.04
+          return (
+            <div
+              key={i}
+              className="rounded-sm"
+              title={count > 0 ? `${count} samples` : 'no samples'}
+              style={{ backgroundColor: `rgba(${color}, ${opacity})` }}
+            />
+          )
+        })}
+      </div>
+      <div className="mt-1 text-[10px] text-gray-400">
+        {positions.length} samples · {occupied}/{COLS * ROWS} cells · peak {maxCount}
+      </div>
     </div>
   )
 }
@@ -75,6 +86,7 @@ export function Heatmaps() {
   }
 
   const overallPoints = derived.heatmaps.players.flatMap((player) => player.points)
+  const extent = derived.heatmaps.extent
   const colorA = derived.teamColors.team_a
   const colorB = derived.teamColors.team_b
 
@@ -111,8 +123,12 @@ export function Heatmaps() {
             <CardTitle className="text-sm">Overall Field Heatmap</CardTitle>
           </CardHeader>
           <CardContent>
-            <HeatmapGrid positions={overallPoints} color="16, 185, 129" height="h-36" />
-            <div className="text-xs text-gray-500 mt-2">{overallPoints.length} position samples</div>
+            <HeatmapGrid positions={overallPoints} color="16, 185, 129" extent={extent} height="h-36" />
+            <p className="mt-2 text-[11px] text-gray-500">
+              Camera view, not a pitch map. Cells are positions in the frame, so a
+              panning camera moves the picture with it — read it as where play sat
+              on screen rather than as fixed pitch locations.
+            </p>
           </CardContent>
         </Card>
       )}
@@ -138,7 +154,7 @@ export function Heatmaps() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <HeatmapGrid positions={teamHeatmap.points} color={rgbTuple(color)} height="h-24" />
+                  <HeatmapGrid positions={teamHeatmap.points} color={rgbTuple(color)} extent={extent} height="h-24" />
                 </CardContent>
               </Card>
             )
@@ -166,7 +182,7 @@ export function Heatmaps() {
                       {heatmap.team === 'team_a' ? derived.teamLabels.team_a : heatmap.team === 'team_b' ? derived.teamLabels.team_b : heatmap.team}
                     </div>
                   </div>
-                  <HeatmapGrid positions={heatmap.points} color={rgbTuple(color)} />
+                  <HeatmapGrid positions={heatmap.points} color={rgbTuple(color)} extent={extent} />
                 </CardContent>
               </Card>
             )
