@@ -1,6 +1,15 @@
 import type { Box, Detection, ObjectClass, TrackedObject } from './types'
 import { boxCenter, iou } from './types'
 
+/** Fraction of the smaller box contained by the larger. */
+function containment(a: Box, b: Box) {
+  const interW = Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0])
+  const interH = Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1])
+  if (interW <= 0 || interH <= 0) return 0
+  const smaller = Math.min(a[2] * a[3], b[2] * b[3])
+  return smaller > 0 ? (interW * interH) / smaller : 0
+}
+
 interface TrackerOptions {
   /** Frames a person track survives without a matching detection. */
   personMaxAge?: number
@@ -26,6 +35,8 @@ interface InternalTrack extends TrackedObject {
 export class MultiObjectTracker {
   private tracks: InternalTrack[] = []
   private nextId = 1
+  /** Display numbers currently in use; freed when a track dies and reused. */
+  private usedLabels = new Set<number>()
   private frameId = 0
   private options: Required<TrackerOptions>
 
@@ -43,6 +54,7 @@ export class MultiObjectTracker {
   reset() {
     this.tracks = []
     this.nextId = 1
+    this.usedLabels.clear()
     this.frameId = 0
   }
 
@@ -92,6 +104,7 @@ export class MultiObjectTracker {
       if (usedDetections.has(index)) return
       this.tracks.push({
         id: this.nextId++,
+        label: this.takeLabel(),
         bbox: detection.bbox,
         score: detection.score,
         class: detection.class,
@@ -107,8 +120,12 @@ export class MultiObjectTracker {
 
     this.tracks = this.tracks.filter((track) => {
       const maxAge = track.class === 'ball' ? this.options.ballMaxAge : this.options.personMaxAge
-      return track.missed <= maxAge
+      const alive = track.missed <= maxAge
+      if (!alive) this.usedLabels.delete(track.label)
+      return alive
     })
+
+    this.dropDuplicatePeople()
 
     // Only one ball can be in play; keep the best-supported track.
     const balls = this.tracks.filter((track) => track.class === 'ball')
@@ -120,6 +137,46 @@ export class MultiObjectTracker {
     return this.tracks
       .filter((track) => track.hits >= this.options.minHits || track.class === 'ball')
       .map((track) => ({ ...track }))
+  }
+
+  /** Smallest unused display number, so labels stay in a readable range. */
+  private takeLabel() {
+    let candidate = 1
+    while (this.usedLabels.has(candidate)) candidate++
+    this.usedLabels.add(candidate)
+    return candidate
+  }
+
+  /**
+   * Two tracks sitting on the same player.
+   *
+   * Association is per-frame, so a player briefly lost and re-found gains a
+   * second track that then follows them in parallel - three boxes stacked on
+   * one shirt, and three entries in every count. Where two person tracks
+   * overlap heavily the better supported one survives.
+   */
+  private dropDuplicatePeople() {
+    const people = this.tracks.filter((track) => track.class === 'person')
+    if (people.length < 2) return
+    const doomed = new Set<InternalTrack>()
+
+    for (let i = 0; i < people.length; i++) {
+      for (let j = i + 1; j < people.length; j++) {
+        const a = people[i]
+        const b = people[j]
+        if (doomed.has(a) || doomed.has(b)) continue
+        const overlap = iou(a.bbox, b.bbox)
+        if (overlap < 0.55 && containment(a.bbox, b.bbox) < 0.75) continue
+        // Keep whichever has been seen more and confirmed most recently.
+        const scoreA = a.hits - a.missed * 2
+        const scoreB = b.hits - b.missed * 2
+        doomed.add(scoreA >= scoreB ? b : a)
+      }
+    }
+
+    if (!doomed.size) return
+    doomed.forEach((track) => this.usedLabels.delete(track.label))
+    this.tracks = this.tracks.filter((track) => !doomed.has(track))
   }
 
   /** Lets the team classifier write its decision back onto the live tracks. */

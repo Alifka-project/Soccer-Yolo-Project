@@ -13,6 +13,8 @@ export interface LiveFrame {
   team_colors: { team_a: string; team_b: string } | null
   tracking_data: Array<{
     track_id: number
+    /** Small stable number for display. */
+    label: number
     bbox: [number, number, number, number]
     class: string
     confidence: number
@@ -326,6 +328,7 @@ export class LiveAnalysisEngine {
         const center = boxCenter(object.bbox)
         return {
           track_id: object.id,
+          label: object.label,
           bbox: object.bbox,
           class: object.class,
           confidence: object.score,

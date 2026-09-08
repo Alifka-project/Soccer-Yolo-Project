@@ -12,6 +12,11 @@ export interface Detection {
 
 export interface TrackedObject {
   id: number
+  /**
+   * Small stable number shown on the overlay. Internal ids only ever climb, so
+   * labelling boxes with them made fourteen players on screen look like sixty.
+   */
+  label: number
   bbox: Box
   score: number
   class: ObjectClass

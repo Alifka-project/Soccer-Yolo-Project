@@ -63,7 +63,7 @@ export function PlayerMetrics() {
                 <CardTitle className="flex items-center justify-between text-sm">
                   <div className="flex items-center gap-2">
                     <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }}></div>
-                    Player {player.id}
+                    Player {player.label ?? player.id}
                   </div>
                   <div className="flex gap-1">
                     <Badge variant="outline" className="text-xs" style={{ color, borderColor: color, background: rgbaFromHex(color, 0.1) }}>

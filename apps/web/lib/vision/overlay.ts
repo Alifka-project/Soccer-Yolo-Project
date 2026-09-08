@@ -152,7 +152,7 @@ export function drawOverlay(
     ctx.restore()
 
     if (options.showLabels && !object.coasted) {
-      drawLabel(ctx, `${object.track_id}`, x, y, color)
+      drawLabel(ctx, `${object.label ?? object.track_id}`, x, y, color)
     }
   }
 

@@ -123,7 +123,7 @@ console.log('\n[team classifier]')
   }
   const classifier = new TeamClassifier()
   const objects: TrackedObject[] = boxes.map((bbox, index) => ({
-    id: index + 1, bbox, score: 0.9, class: 'person' as const, age: 5, hits: 5,
+    id: index + 1, label: index + 1, bbox, score: 0.9, class: 'person' as const, age: 5, hits: 5,
     missed: 0, velocity: [0, 0] as [number, number], team: 'unknown' as const, coasted: false,
   }))
   let labeled = objects
@@ -217,7 +217,7 @@ function buildTracks(opts: { withBall: boolean }) {
 
   const classifier = new TeamClassifier()
   const objects: TrackedObject[] = boxes.map((bbox, index) => ({
-    id: index + 1, bbox, score: 0.9, class: 'person' as const, age: 5, hits: 5,
+    id: index + 1, label: index + 1, bbox, score: 0.9, class: 'person' as const, age: 5, hits: 5,
     missed: 0, velocity: [0, 0] as [number, number], team: 'unknown' as const, coasted: false,
   }))
   let labeled = objects
@@ -269,6 +269,33 @@ console.log('\n[ownership model]')
   const derived = deriveAnalytics(map, { frame_id: 59, resolution: [1280, 720] }, 30)
   check('possession transfers across a long pass', derived.passes.total_passes >= 1, String(derived.passes.total_passes))
   check('the pass is credited to the right team', derived.passes.team_a_passes >= 1, String(derived.passes.team_a_passes))
+}
+
+// ------------------------------------------------------ tracker identity
+console.log('\n[tracker identity]')
+{
+  const tracker = new MultiObjectTracker()
+  // Two detections on the same player: one solid, one a near-duplicate from a
+  // tile seam. Only one track should survive.
+  for (let f = 0; f < 12; f++) {
+    tracker.update([
+      { bbox: [300 + f * 2, 200, 40, 92], score: 0.9, class: 'person' },
+      { bbox: [304 + f * 2, 204, 38, 88], score: 0.6, class: 'person' },
+      { bbox: [700, 300, 40, 92], score: 0.9, class: 'person' },
+    ])
+  }
+  const live = tracker.snapshot().filter((t) => t.class === 'person')
+  check('overlapping tracks on one player are merged', live.length === 2, `${live.length} tracks`)
+
+  // Labels must stay small and readable even after churn.
+  for (let round = 0; round < 40; round++) {
+    tracker.update([{ bbox: [100 + (round % 5) * 300, 150 + (round % 3) * 120, 40, 92], score: 0.9, class: 'person' }])
+  }
+  const labels = tracker.snapshot().map((t) => t.label)
+  const ids = tracker.snapshot().map((t) => t.id)
+  check('display labels stay in a readable range', labels.every((l) => l >= 1 && l <= 30), labels.join(','))
+  check('internal ids have climbed well past the labels', Math.max(...ids) > Math.max(...labels), `ids max ${Math.max(...ids)} vs labels max ${Math.max(...labels)}`)
+  check('labels are unique among live tracks', new Set(labels).size === labels.length, labels.join(','))
 }
 
 // ------------------------------------------------------- pass success rate

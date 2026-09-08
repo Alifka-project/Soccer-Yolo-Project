@@ -73,6 +73,8 @@ export interface TrackPosition {
 
 export interface NormalizedTrack {
   id: string
+  /** Small stable number matching the overlay label, when the live engine supplies one. */
+  label?: number
   class: string
   team: TeamId
   jersey?: number | null
@@ -82,6 +84,7 @@ export interface NormalizedTrack {
 
 export interface PlayerMetric {
   id: string
+  label?: number
   team: TeamId
   jersey?: number | null
   color?: string
@@ -255,6 +258,7 @@ export function collectTracks(
   tracks.forEach((track, id) => {
     byId.set(String(id), {
       id: String(id),
+      label: track.label,
       class: track.class || 'person',
       team: (track.team as TeamId) || 'unknown',
       jersey: track.jersey ?? null,
@@ -268,6 +272,7 @@ export function collectTracks(
       const id = String(obj.track_id ?? obj.id)
       const existing = byId.get(id) || {
         id,
+        label: obj.label,
         class: obj.class || 'person',
         team: (obj.team as TeamId) || 'unknown',
         jersey: null,
@@ -275,6 +280,7 @@ export function collectTracks(
         positions: [],
       }
       if (obj.color) existing.color = obj.color
+      if (obj.label != null) existing.label = obj.label
       if (obj.team) existing.team = obj.team
       const bbox = obj.bbox || obj.center || [0, 0, 0, 0]
       const nextPos: TrackPosition = {
@@ -602,6 +608,7 @@ function playerMetrics(tracks: NormalizedTrack[], fps: number, scale: PitchScale
       const timeOnField = elapsed
       return {
         id: track.id,
+        label: track.label,
         team: track.team,
         jersey: track.jersey,
         color: track.color,
@@ -1474,6 +1481,7 @@ export function mergeRealtimeTracks(
     const id = String(obj.track_id ?? obj.id)
     const existing = next.get(id) || {
       id,
+      label: obj.label,
       class: obj.class || 'person',
       team: obj.team || 'unknown',
       jersey: null,
@@ -1503,6 +1511,7 @@ export function mergeRealtimeTracks(
     next.set(id, {
       ...existing,
       id,
+      label: obj.label ?? existing.label,
       class: obj.class || existing.class || 'person',
       team: obj.team || existing.team || 'unknown',
       color: obj.color || existing.color,

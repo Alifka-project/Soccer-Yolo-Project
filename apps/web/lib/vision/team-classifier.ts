@@ -105,7 +105,7 @@ export class TeamClassifier {
   private recluster() {
     const entries: Array<{ id: number; entry: TrackColor; lab: Lab }> = []
     this.tracks.forEach((entry, id) => {
-      if (entry.samples.length < 2) return
+      if (entry.samples.length < 4) return
       const rgb = medianRgb(entry.samples)
       entry.color = rgbToHex(rgb)
       entry.lab = rgbToLab(rgb)
@@ -203,7 +203,24 @@ function sampleJersey(image: ImageData, box: Box, scale: number): [number, numbe
   }
 
   if (reds.length < 3) return null
-  return [median(reds), median(greens), median(blues)]
+
+  // Take the median of the most colourful pixels rather than of everything in
+  // the box. A far-side player is only a few pixels wide, so the crop carries
+  // as much pitch, shorts and shadow as shirt, and a plain median drifted
+  // towards that background - which is how a red shirt ended up clustered with
+  // the light-blue side.
+  const pixels = reds.map((r, i) => {
+    const g = greens[i]
+    const b = blues[i]
+    return { r, g, b, chroma: Math.max(r, g, b) - Math.min(r, g, b) }
+  })
+  pixels.sort((a, b) => b.chroma - a.chroma)
+  const keep = pixels.slice(0, Math.max(3, Math.ceil(pixels.length * 0.5)))
+  return [
+    median(keep.map((p) => p.r)),
+    median(keep.map((p) => p.g)),
+    median(keep.map((p) => p.b)),
+  ]
 }
 
 function median(values: number[]) {
