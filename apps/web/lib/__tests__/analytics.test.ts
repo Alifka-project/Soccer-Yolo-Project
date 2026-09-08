@@ -623,6 +623,52 @@ console.log('\n[audit fixes]')
   check('a pass across the pitch is metres, not centimetres', !p || p.distance >= 3, p ? `${p.distance.toFixed(1)} m` : 'no pass')
 }
 
+// ------------------------------------------------- loose ball / attribution
+console.log('\n[possession attribution]')
+{
+  // A ball tracked far from everyone: in flight, or a stray detection. It must
+  // not hand possession to whoever happens to be least far away.
+  const map = new Map<string, any>()
+  const still = (id: string, team: string, x: number, y: number) => map.set(id, {
+    id, class: 'person', team, color: team === 'team_a' ? '#E11D48' : '#2563EB',
+    positions: Array.from({ length: 60 }, (_, f) => ({ frame: f, x, y, w: 40, h: 90, score: 0.9 })),
+  })
+  still('1', 'team_a', 200, 400); still('2', 'team_a', 260, 430)
+  still('3', 'team_b', 320, 410); still('4', 'team_b', 380, 440)
+  map.set('ball', { id: 'ball', class: 'ball', team: 'ball', color: '#F8FAFC',
+    positions: Array.from({ length: 60 }, (_, f) => ({ frame: f, x: 1150, y: 120, w: 14, h: 14, score: 0.5 })) })
+  const d = deriveAnalytics(map, { frame_id: 59, resolution: [1280, 720] }, 30)
+  check('a ball nobody is near grants no possession',
+    d.possession.total_possession_time < 1.5, `${d.possession.total_possession_time.toFixed(1)}s`)
+}
+{
+  // Ball genuinely at a team_a player's feet the whole time.
+  const map = new Map<string, any>()
+  const still = (id: string, team: string, x: number) => map.set(id, {
+    id, class: 'person', team, color: team === 'team_a' ? '#E11D48' : '#2563EB',
+    positions: Array.from({ length: 60 }, (_, f) => ({ frame: f, x, y: 400, w: 40, h: 90, score: 0.9 })),
+  })
+  still('1', 'team_a', 300); still('2', 'team_a', 380)
+  still('3', 'team_b', 700); still('4', 'team_b', 780)
+  map.set('ball', { id: 'ball', class: 'ball', team: 'ball', color: '#F8FAFC',
+    positions: Array.from({ length: 60 }, (_, f) => ({ frame: f, x: 315, y: 460, w: 14, h: 14, score: 0.5 })) })
+  const d = deriveAnalytics(map, { frame_id: 59, resolution: [1280, 720] }, 30)
+  check('a ball at a player\'s feet does grant possession', d.possession.total_possession_time > 1, `${d.possession.total_possession_time.toFixed(1)}s`)
+  check('ball coverage never exceeds one', d.ballCoverage <= 1.0001, d.ballCoverage.toFixed(2))
+}
+{
+  // One side barely tracked: a split would describe the camera, not the match.
+  const map = new Map<string, any>()
+  for (let i = 0; i < 5; i++) {
+    map.set(String(i), { id: String(i), class: 'person', team: 'team_a', color: '#E11D48',
+      positions: Array.from({ length: 60 }, (_, f) => ({ frame: f, x: 300 + i * 60, y: 400, w: 40, h: 90, score: 0.9 })) })
+  }
+  map.set('lone', { id: 'lone', class: 'person', team: 'team_b', color: '#2563EB',
+    positions: Array.from({ length: 3 }, (_, f) => ({ frame: f, x: 900, y: 400, w: 40, h: 90, score: 0.9 })) })
+  const d = deriveAnalytics(map, { frame_id: 59, resolution: [1280, 720] }, 30)
+  check('a one-sided view is flagged as not attributable', !d.possessionAttributable, String(d.possessionAttributable))
+}
+
 // --------------------------------------------------- win probability model
 console.log('\n[win probability]')
 {

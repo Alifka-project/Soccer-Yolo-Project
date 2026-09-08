@@ -137,6 +137,8 @@ export interface DerivedAnalytics {
   ballDetected: boolean
   /** Share of possession samples that were anchored on a tracked ball, 0..1. */
   ballCoverage: number
+  /** False when one side was too rarely visible for a split to mean anything. */
+  possessionAttributable: boolean
   /** Players present in the most recent analysed frames - what is on the pitch. */
   playerCount: number
   /** Distinct identities seen at any point, which grows as the tracker re-acquires players. */
@@ -798,6 +800,13 @@ class OwnershipHysteresis {
     return this.held
   }
 
+  /** Nobody is in control - a loose ball or one in flight. */
+  release() {
+    this.held = null
+    this.pending = null
+    this.pendingCount = 0
+  }
+
   /**
    * @param holderOutOfRange True when the current holder is too far from the
    *   action to still have the ball. Flicker suppression must not survive a
@@ -879,6 +888,9 @@ function ownerSequence(
   const ownership = new OwnershipHysteresis()
   const maxGapFrames = Math.max(Math.round(fps * 0.5), 4)
   let ballAnchored = 0
+  let looseFrames = 0
+  let samplesWithTeamA = 0
+  let samplesWithTeamB = 0
 
   for (const frame of frames) {
     const present: Array<{ id: string; team: TeamId; pos: TrackPosition; c: { x: number; y: number } }> = []
@@ -888,12 +900,13 @@ function ownerSequence(
       present.push({ id: player.id, team: player.team, pos, c: center(pos) })
     }
     if (!present.length) continue
+    if (present.some((p) => p.team === 'team_a')) samplesWithTeamA++
+    if (present.some((p) => p.team === 'team_b')) samplesWithTeamB++
 
     const ballPos = ballPositionAt(ball, frame, maxGapFrames)
     let action: { x: number; y: number }
     if (ballPos) {
       action = center(ballPos)
-      ballAnchored++
     } else {
       if (present.length < 2) continue
       const crowd = {
@@ -910,6 +923,25 @@ function ownerSequence(
       .sort((a, b) => a.d - b.d)
     const best = ranked[0]
     const runnerUp = ranked[1]
+
+    // A tracked ball with nobody near it is a loose ball or one in flight, and
+    // belongs to neither side. Unifying the ball and proximity models dropped
+    // this gate, so possession was being credited to the nearest player even
+    // when they were twenty metres away - which pinned whole clips at 100/0.
+    if (ballPos) {
+      const reach = Math.max(best.pos.h * 2.6, best.pos.w * 3.4, 90)
+      if (best.d > reach) {
+        looseFrames++
+        // Only give up the ball once it is clearly gone, so a pass in flight
+        // does not reset possession on every frame it is airborne.
+        if (looseFrames >= 3) ownership.release()
+        continue
+      }
+      looseFrames = 0
+      // Counted only once the frame actually yields ball-anchored control, so
+      // coverage cannot exceed the samples it is divided by.
+      ballAnchored++
+    }
 
     // With the ball anchoring the action, a contested ball is genuinely
     // ambiguous and should hold rather than flip. Require a clear nearest.
@@ -936,7 +968,15 @@ function ownerSequence(
   }
 
   const coverage = samples.length ? ballAnchored / samples.length : 0
-  return { samples, coverage }
+  // Possession is a comparison. If one side was barely visible while the other
+  // was tracked throughout, any split says more about who the camera followed
+  // than about the match, and printing 100/0 presents that as a finding.
+  const visibleFrames = Math.max(samplesWithTeamA, samplesWithTeamB, 1)
+  const bothSidesVisible =
+    samplesWithTeamA > 0 &&
+    samplesWithTeamB > 0 &&
+    Math.min(samplesWithTeamA, samplesWithTeamB) / visibleFrames >= 0.2
+  return { samples, coverage, bothSidesVisible }
 }
 
 /** Turns a sequence of ball-owner samples into possession, passes and events. */
@@ -1104,11 +1144,11 @@ function possessionAndPasses(
     }
   }
 
-  const { samples, coverage } = ownerSequence(people, ball, resolution, fps)
+  const { samples, coverage, bothSidesVisible } = ownerSequence(people, ball, resolution, fps)
   // Report the model that actually drove most of the samples.
   const source: PossessionSource = coverage >= 0.5 ? 'ball' : 'proximity'
   const summary = summarizeOwners(samples, fps, source, scale)
-  return { ...summary, ballDetected, ballCoverage: coverage }
+  return { ...summary, ballDetected, ballCoverage: coverage, bothSidesVisible }
 }
 
 function looksFakeWorkerStats(stats: any) {
@@ -1132,6 +1172,25 @@ function looksFakePassStats(stats: any) {
   return false
 }
 
+/** Frame extent inferred from tracked positions, for callers that omit it. */
+function inferResolution(tracks: NormalizedTrack[]): [number, number] | null {
+  let maxX = 0
+  let maxY = 0
+  let seen = 0
+  for (const track of tracks) {
+    for (const pos of track.positions) {
+      seen++
+      const right = pos.x + pos.w
+      const bottom = pos.y + pos.h
+      if (right > maxX) maxX = right
+      if (bottom > maxY) maxY = bottom
+    }
+  }
+  if (seen < 4 || maxX <= 0 || maxY <= 0) return null
+  // Players do not reach the very edge of frame, so pad the observed extent.
+  return [maxX * 1.08, maxY * 1.08]
+}
+
 export function deriveAnalytics(
   tracksMap: Map<string, any>,
   analyticsData: any,
@@ -1143,9 +1202,16 @@ export function deriveAnalytics(
   const scale = buildPitchScale(labeled)
   const players = playerMetrics(labeled, fps, scale)
   const team = teamStats(labeled, scale)
-  const resolution = Array.isArray(analyticsData?.resolution) && analyticsData.resolution.length === 2
+  // A caller that omits the frame size used to change the answer: without it
+  // the possession model falls back to the crowd centroid alone, which leans
+  // towards whichever side has more players in shot and can pin possession at
+  // 100/0. Infer the extent from the tracks instead of running unanchored.
+  const suppliedResolution = Array.isArray(analyticsData?.resolution) && analyticsData.resolution.length === 2
     ? ([Number(analyticsData.resolution[0]), Number(analyticsData.resolution[1])] as [number, number])
     : null
+  const resolution: [number, number] | null = suppliedResolution && suppliedResolution[0] > 0 && suppliedResolution[1] > 0
+    ? suppliedResolution
+    : inferResolution(labeled)
   const computed = possessionAndPasses(labeled, fps, resolution, scale)
 
   const workerPossession = analyticsData?.possession_stats
@@ -1326,6 +1392,7 @@ export function deriveAnalytics(
     emptyReason: ready ? '' : 'Press play to start live analysis',
     ballDetected: computed.ballDetected,
     ballCoverage: Number((computed as any).ballCoverage || 0),
+    possessionAttributable: Boolean((computed as any).bothSidesVisible),
     playerCount: onPitch.length,
     playersSeen: players.length,
     objectCount: labeled.length,

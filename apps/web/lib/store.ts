@@ -128,6 +128,10 @@ function applyCompletedSummary(summary: any, fallbackFps: number) {
     tracking_data: trackingData,
     timestamp: Date.now() / 1000,
     team_colors: summary?.team_colors,
+    // The worker reports the frame size and the possession model needs it to
+    // locate play when the ball is momentarily untracked. Dropping it here
+    // collapsed worker-path possession to 100/0.
+    resolution: summary?.resolution,
   }
   return {
     tracks,
@@ -623,6 +627,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               tracking_data: data.tracking_data || [],
               timestamp: data.timestamp || Date.now() / 1000,
               team_colors: data.team_colors || get().analyticsData?.team_colors,
+              resolution: data.resolution || (get().analyticsData as any)?.resolution,
             }
             const tracks = mergeRealtimeTracks(
               get().tracks,

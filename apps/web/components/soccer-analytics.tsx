@@ -70,7 +70,13 @@ export function SoccerAnalytics() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {collecting ? (
+          {!derived.possessionAttributable && possession.total_possession_time >= 0.35 ? (
+            <p className="text-sm text-gray-500">
+              Only one side was tracked for most of this passage, so a possession
+              split would describe who the camera followed rather than the match.
+              It appears once both teams are visible together.
+            </p>
+          ) : collecting ? (
             <p className="text-sm text-gray-500">
               Collecting possession samples… percentages appear after about 0.4s of tracked control.
             </p>
@@ -100,6 +106,14 @@ export function SoccerAnalytics() {
           <p className="text-[11px] text-gray-500">
             {possessionNote(possession.source, derived.ballCoverage)}
           </p>
+          {possession.total_possession_time > 0 && (
+            <p className="text-[11px] text-gray-500">
+              Based on {fmt(possession.total_possession_time)}s of attributed control.
+              A ball nobody is near counts for neither side, so this is less than the
+              clip length — a lopsided split over a short sample is one passage of
+              play, not the run of the match.
+            </p>
+          )}
 
           {possession.current_possession && (
             <div className="mt-2 p-3 bg-green-50 rounded-lg border border-green-200">
