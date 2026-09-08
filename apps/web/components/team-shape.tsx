@@ -36,7 +36,7 @@ export function TeamShape() {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
         <h3 className="font-medium text-lg">Team Shape</h3>
-        <Badge variant="secondary">{teamA.count + teamB.count} Players</Badge>
+        <Badge variant="secondary">{teamA.count + teamB.count} on pitch</Badge>
       </div>
       <TeamLegend colors={derived.teamColors} labels={derived.teamLabels} />
 

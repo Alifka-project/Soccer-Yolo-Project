@@ -32,7 +32,10 @@ export function PlayerMetrics() {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
         <h3 className="font-medium text-lg">Player Metrics</h3>
-        <Badge variant="secondary">{derived.players.length} Players</Badge>
+        <Badge variant="secondary">
+          {derived.playerCount} on pitch
+          {derived.playersSeen > derived.playerCount ? ` · ${derived.playersSeen} seen` : ''}
+        </Badge>
       </div>
       <TeamLegend colors={derived.teamColors} labels={derived.teamLabels} />
 

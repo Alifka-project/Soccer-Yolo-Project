@@ -137,7 +137,10 @@ export interface DerivedAnalytics {
   ballDetected: boolean
   /** Share of possession samples that were anchored on a tracked ball, 0..1. */
   ballCoverage: number
+  /** Players present in the most recent analysed frames - what is on the pitch. */
   playerCount: number
+  /** Distinct identities seen at any point, which grows as the tracker re-acquires players. */
+  playersSeen: number
   objectCount: number
   frameId: number
   fps: number
@@ -1302,6 +1305,20 @@ export function deriveAnalytics(
     .sort((a, b) => a.frame - b.frame)
     .slice(-60)
 
+  // "Players tracked" used to be every identity still in the store, so a clip
+  // with eleven players on screen reported twenty or more: the tracker mints a
+  // new id whenever it loses and re-acquires someone, and those stale entries
+  // lingered. Count only players seen in the most recent frames.
+  const latestFrame = labeled.reduce((max, track) => {
+    const last = track.positions[track.positions.length - 1]
+    return last && last.frame > max ? last.frame : max
+  }, 0)
+  const recentWindow = Math.max(Math.round(fps * 0.75), 3)
+  const onPitch = players.filter((player) => {
+    const last = player.lastPosition
+    return last != null && latestFrame - last.frame <= recentWindow
+  })
+
   const ready = labeled.some((track) => track.positions.length > 0)
   return {
     ready,
@@ -1309,7 +1326,8 @@ export function deriveAnalytics(
     emptyReason: ready ? '' : 'Press play to start live analysis',
     ballDetected: computed.ballDetected,
     ballCoverage: Number((computed as any).ballCoverage || 0),
-    playerCount: players.length,
+    playerCount: onPitch.length,
+    playersSeen: players.length,
     objectCount: labeled.length,
     frameId: Number(analyticsData?.frame_id || 0),
     fps,
@@ -1354,7 +1372,9 @@ export function enrichTrackMap(tracks: Map<string, any>) {
 }
 
 function pruneStaleTracks(tracks: Map<string, any>, frameId: number, maxPeople = 24) {
-  const staleBefore = Math.max(0, frameId - 48)
+  // Roughly a second of video without a sighting. The old 48-frame window let
+  // departed players linger and inflate every count.
+  const staleBefore = Math.max(0, frameId - 30)
   const people: Array<{ id: string; track: any; frames: number; last: number }> = []
   const kept = new Map<string, any>()
 
@@ -1396,7 +1416,11 @@ export function mergeRealtimeTracks(
     const bbox = obj.bbox || [0, 0, 0, 0]
     const positions = Array.isArray(existing.positions) ? existing.positions.slice() : []
     const last = positions[positions.length - 1]
-    if (!last || last.frame !== frameId) {
+    // A coasted box is the motion model guessing where someone went, not a
+    // sighting. Recording those as observations kept players "on the pitch"
+    // long after they left frame and let phantoms accrue distance, so a clip
+    // with eleven players reported twenty-odd.
+    if (!obj.coasted && (!last || last.frame !== frameId)) {
       positions.push({
         frame: frameId,
         x: Number(bbox[0]) || 0,

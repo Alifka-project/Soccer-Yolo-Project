@@ -34,7 +34,9 @@ export class MultiObjectTracker {
       personMaxAge: options.personMaxAge ?? 12,
       ballMaxAge: options.ballMaxAge ?? 20,
       minAffinity: options.minAffinity ?? 0.18,
-      minHits: options.minHits ?? 2,
+      // Three sightings, not two: a single spurious detection repeated once by
+      // the motion model was enough to mint a permanent player.
+      minHits: options.minHits ?? 3,
     }
   }
 

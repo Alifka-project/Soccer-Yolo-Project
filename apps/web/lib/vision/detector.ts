@@ -35,6 +35,7 @@ const TILE_LAYOUT: Record<DetectorQuality, { cols: number; rows: number; base: '
 const PERSON_MIN_SCORE = 0.28
 const BALL_MIN_SCORE = 0.12
 const TILE_OVERLAP = 0.14
+const MAX_PEOPLE_ON_PITCH = 26
 
 export class LiveDetector {
   private model: CocoModel | null = null
@@ -152,7 +153,13 @@ export class LiveDetector {
     // The pitch boundary is what separates players from photographers, camera
     // operators, substitutes and the crowd — all of whom the detector finds.
     const pitch = computePitchMask(image)
-    const persons = raw.filter((d) => d.class === 'person' && isPlayerOnPitch(d.bbox, pitch))
+    const persons = raw
+      .filter((d) => d.class === 'person' && isPlayerOnPitch(d.bbox, pitch))
+      // Twenty-two players, three officials and a little slack. Anything beyond
+      // that is false positives, and keeping them inflated every count and
+      // dragged the jersey clustering around.
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_PEOPLE_ON_PITCH)
 
     // A ball detected off the field of play is a stadium light, a helmet or a
     // ball in the stands, and would drag possession to whoever stood nearest.
@@ -244,14 +251,30 @@ function normalize(
   return out
 }
 
+/** Fraction of the smaller box that lies inside the larger one. */
+function containment(a: Box, b: Box) {
+  const interW = Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0])
+  const interH = Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1])
+  if (interW <= 0 || interH <= 0) return 0
+  const inter = interW * interH
+  const smaller = Math.min(a[2] * a[3], b[2] * b[3])
+  return smaller > 0 ? inter / smaller : 0
+}
+
 export function nonMaxSuppression(detections: Detection[], threshold: number): Detection[] {
   const sorted = [...detections].sort((a, b) => b.score - a.score)
   const kept: Detection[] = []
   for (const candidate of sorted) {
-    const overlaps = kept.some(
-      (existing) => existing.class === candidate.class && iou(existing.bbox, candidate.bbox) > threshold,
-    )
-    if (!overlaps) kept.push(candidate)
+    const duplicate = kept.some((existing) => {
+      if (existing.class !== candidate.class) return false
+      if (iou(existing.bbox, candidate.bbox) > threshold) return true
+      // A player standing across a tile seam is cropped differently in each
+      // tile, so the two boxes overlap poorly by IoU and both survived - one
+      // player counted twice. Containment catches the partial box that IoU
+      // misses.
+      return containment(existing.bbox, candidate.bbox) > 0.7
+    })
+    if (!duplicate) kept.push(candidate)
   }
   return kept
 }

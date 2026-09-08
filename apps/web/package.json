@@ -10,7 +10,8 @@
     "test": "tsc lib/__tests__/analytics.test.ts --outDir .test-build --module commonjs --target es2020 --moduleResolution node --skipLibCheck --esModuleInterop --lib es2020,dom && node .test-build/__tests__/analytics.test.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:perf": "tsc lib/__tests__/perf.ts --outDir .test-build --module commonjs --target es2020 --moduleResolution node --skipLibCheck --esModuleInterop --lib es2020,dom && node .test-build/__tests__/perf.js",
-    "fetch:models": "bash scripts/fetch-models.sh"
+    "fetch:models": "bash scripts/fetch-models.sh",
+    "dev:all": "bash ../../start-local.sh"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.0.5",
